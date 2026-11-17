@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pulsar Dashboard</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font: 13px/1.45 'Segoe UI', system-ui, sans-serif; background: #0d1117; color: #e6edf3; min-height: 100vh; }
+  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 14px 20px; background: #161b22; border-bottom: 1px solid #30363d; position: sticky; top: 0; z-index: 5; }
+  header h1 { font-size: 17px; font-weight: 600; color: #58a6ff; }
+  .badge { background: #21262d; border: 1px solid #30363d; border-radius: 999px; padding: 3px 10px; font-size: 12px; }
+  .badge b { color: #3fb950; }
+  #conn-dot { width: 9px; height: 9px; border-radius: 50%; background: #f85149; display: inline-block; margin-right: 5px; }
+  #conn-dot.on { background: #3fb950; }
+  header .spacer { flex: 1; }
+  button, select, input { background: #21262d; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 5px 10px; font: inherit; cursor: pointer; }
+  button:hover { background: #30363d; }
+  main { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px 20px; max-width: 1500px; margin: 0 auto; }
+  section { background: #161b22; border: 1px solid #30363d; border-radius: 8px; overflow: hidden; }
+  section h2 { font-size: 13px; font-weight: 600; padding: 10px 14px; background: #1c2129; border-bottom: 1px solid #30363d; color: #e6edf3; display: flex; justify-content: space-between; }
+  section h2 .count { color: #8b949e; }
+  .pad { padding: 10px 14px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { text-align: left; color: #8b949e; font-weight: 500; padding: 6px 10px; border-bottom: 1px solid #30363d; position: sticky; top: 0; background: #161b22; }
+  td { padding: 6px 10px; border-bottom: 1px solid #21262d; vertical-align: top; }
+  tr:hover td { background: #1c2129; }
+  .mono { font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: #a5d6ff; }
+  .dim { color: #8b949e; }
+  .tag { background: #1f6feb33; border: 1px solid #1f6feb; color: #79c0ff; border-radius: 999px; padding: 1px 8px; font-size: 11px; white-space: nowrap; }
+  select.act { padding: 2px 6px; font-size: 11px; }
+  #events .pad { max-height: 420px; overflow-y: auto; font-family: ui-monospace, Consolas, monospace; font-size: 11px; }
+  .evt { padding: 3px 6px; border-left: 3px solid #484f58; margin-bottom: 3px; white-space: pre-wrap; word-break: break-word; }
+  .evt.client_connected { border-color: #3fb950; }
+  .evt.client_disconnected { border-color: #f85149; }
+  .evt.log { border-color: #1f6feb; }
+  .evt.hello { border-color: #d29922; }
+  #log-view { max-height: 300px; overflow-y: auto; }
+  #log-view div { font-family: ui-monospace, Consolas, monospace; font-size: 11px; padding: 2px 6px; }
+  #log-view .error { color: #f85149; }
+  #log-view .info { color: #79c0ff; }
+  #keybar { display: none; padding: 14px 20px; background: #1c2129; border-bottom: 1px solid #30363d; }
+  #keybar.show { display: flex; gap: 8px; align-items: center; }
+  #keybar input { flex: 1; max-width: 520px; }
+  .err { color: #f85149; }
+  .ok { color: #3fb950; }
+  @media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div id="keybar">
+  <span>API key:</span>
+  <input id="key-input" type="password" placeholder="X-Api-Key" autocomplete="off">
+  <button id="key-save">Connect</button>
+  <span id="key-status" class="dim">Enter the Web API key (Settings &#8594; Web API)</span>
+</div>
+<header>
+  <h1>&#128721; Pulsar Dashboard</h1>
+  <span class="badge">v<span id="srv-version">-</span></span>
+  <span class="badge">Connected: <b id="conn-count">-</b></span>
+  <span><span id="conn-dot"></span><span id="sse-status" class="dim">events: connecting...</span></span>
+  <span class="spacer"></span>
+  <button id="btn-refresh">&#8635; Refresh</button>
+</header>
+<main>
+  <section id="clients-sec" style="grid-column: 1 / -1;">
+    <h2>Connected clients <span class="count" id="clients-count">0</span></h2>
+    <div style="max-height: 460px; overflow-y: auto;">
+      <table>
+        <thead><tr><th>User@PC</th><th>Tag</th><th>OS</th><th>Public IP</th><th>Country</th><th>Version</th><th>Endpoint</th><th>Id</th><th>Action</th></tr></thead>
+        <tbody id="clients-body"><tr><td colspan="9" class="dim pad">no clients connected</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+  <section>
+    <h2>Known clients (offline) <span class="count" id="offline-count">0</span></h2>
+    <div style="max-height: 340px; overflow-y: auto;">
+      <table>
+        <thead><tr><th>User@PC</th><th>Tag</th><th>IP</th><th>Last seen</th><th>Id</th></tr></thead>
+        <tbody id="offline-body"><tr><td colspan="5" class="dim pad">-</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+  <section>
+    <h2>Autotasks <span class="count" id="tasks-count">0</span></h2>
+    <div style="max-height: 340px; overflow-y: auto;">
+      <table>
+        <thead><tr><th>Title</th><th>Identifier</th><th>Mode</th><th>Params</th></tr></thead>
+        <tbody id="tasks-body"><tr><td colspan="4" class="dim pad">-</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+  <section id="events">
+    <h2>Live events <button class="act" id="btn-clear" style="padding:2px 8px;font-size:11px;">clear</button></h2>
+    <div class="pad" id="events-feed"><div class="dim">waiting for events...</div></div>
+  </section>
+  <section>
+    <h2>Server log (recent) <button class="act" id="btn-log" style="padding:2px 8px;font-size:11px;">load</button></h2>
+    <div class="pad" id="log-view"><div class="dim">click load</div></div>
+  </section>
+</main>
+<script>
+(function () {
+  'use strict';
+  var KEY = localStorage.getItem('pulsar_api_key') || '';
+  var keyBar = document.getElementById('keybar');
+  var keyInput = document.getElementById('key-input');
+  var keyStatus = document.getElementById('key-status');
+  var sseStatus = document.getElementById('sse-status');
+  var sseDot = document.getElementById('conn-dot');
+  var esc = function (s) { var d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; };
+
+  function showKeyBar(msg, isErr) {
+    keyBar.className = 'show';
+    if (msg) { keyStatus.textContent = msg; keyStatus.className = isErr ? 'err' : 'dim'; }
+    keyInput.value = KEY;
+  }
+  function hideKeyBar() { keyBar.className = ''; }
+
+  function api(path, opts) {
+    opts = opts || {};
+    opts.headers = Object.assign({ 'X-Api-Key': KEY }, opts.headers || {});
+    return fetch(path, opts);
+  }
+
+  function addEvent(type, text, cls) {
+    var feed = document.getElementById('events-feed');
+    if (feed.firstChild && feed.firstChild.className === 'dim') feed.innerHTML = '';
+    var div = document.createElement('div');
+    div.className = 'evt ' + (cls || type);
+    var t = new Date().toLocaleTimeString();
+    div.textContent = '[' + t + '] ' + type + ': ' + text;
+    feed.insertBefore(div, feed.firstChild);
+    while (feed.children.length > 300) feed.removeChild(feed.lastChild);
+  }
+
+  function renderClients(clients) {
+    var body = document.getElementById('clients-body');
+    document.getElementById('clients-count').textContent = clients.length;
+    document.getElementById('conn-count').textContent = clients.length;
+    if (!clients.length) { body.innerHTML = '<tr><td colspan="9" class="dim pad">no clients connected</td></tr>'; return; }
+    var html = '';
+    clients.forEach(function (c) {
+      html += '<tr>' +
+        '<td><b>' + esc(c.userAtPc || '-') + '</b></td>' +
+        '<td>' + (c.tag ? '<span class="tag">' + esc(c.tag) + '</span>' : '<span class="dim">-</span>') + '</td>' +
+        '<td class="dim">' + esc(c.operatingSystem || '-') + '</td>' +
+        '<td class="mono">' + esc(c.publicIp || '-') + '</td>' +
+        '<td>' + esc((c.country || '-') + (c.countryCode ? ' [' + esc(c.countryCode) + ']' : '')) + '</td>' +
+        '<td class="dim">' + esc(c.version || '-') + '</td>' +
+        '<td class="mono dim">' + esc(c.endPoint || '-') + '</td>' +
+        '<td class="mono dim" title="' + esc(c.id) + '">' + esc(c.id ? String(c.id).slice(0, 8) : '-') + '</td>' +
+        '<td><select class="act" data-id="' + esc(c.id) + '">' +
+        '<option value="">- action -</option>' +
+        '<option value="reconnect">reconnect</option>' +
+        '<option value="disconnect">disconnect</option>' +
+        '<option value="uninstall">uninstall</option>' +
+        '<option value="shutdown">shutdown</option>' +
+        '<option value="restart">restart</option>' +
+        '<option value="standby">standby</option>' +
+        '<option value="lockscreen">lock screen</option>' +
+        '<option value="quickcommand">quick command...</option>' +
+        '<option value="messagebox">message box...</option>' +
+        '</select></td></tr>';
+    });
+    body.innerHTML = html;
+    Array.prototype.forEach.call(body.querySelectorAll('select.act'), function (sel) {
+      sel.addEventListener('change', function () { onAction(sel.getAttribute('data-id'), sel.value, sel); sel.selectedIndex = 0; });
+    });
+  }
+
+  function onAction(id, action, sel) {
+    if (!id || !action) return;
+    if (action === 'quickcommand') {
+      var cmd = prompt('Quick command to run on client:');
+      if (!cmd) return;
+      api('/api/clients/' + encodeURIComponent(id) + '/quickcommand', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command: cmd })
+      }).then(function (r) { return r.json().then(function (j) { addEvent('log', 'quickcommand -> ' + JSON.stringify(j), 'log'); }); });
+      return;
+    }
+    if (action === 'messagebox') {
+      var text = prompt('Message text:');
+      if (!text) return;
+      var cap = prompt('Caption:', 'Pulsar') || 'Pulsar';
+      api('/api/clients/' + encodeURIComponent(id) + '/messagebox', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ caption: cap, text: text })
+      }).then(function (r) { return r.json().then(function (j) { addEvent('log', 'messagebox -> ' + JSON.stringify(j), 'log'); }); });
+      return;
+    }
+    api('/api/clients/' + encodeURIComponent(id) + '/' + action, { method: 'POST' })
+      .then(function (r) { return r.json().then(function (j) { addEvent('log', action + ' -> ' + JSON.stringify(j), 'log'); }); });
+  }
+
+  function renderOffline(records) {
+    var body = document.getElementById('offline-body');
+    document.getElementById('offline-count').textContent = records.length;
+    if (!records.length) { body.innerHTML = '<tr><td colspan="5" class="dim pad">none</td></tr>'; return; }
+    var html = '';
+    records.forEach(function (r) {
+      var seen = r.lastSeenUtc ? new Date(r.lastSeenUtc).toLocaleString() : '-';
+      html += '<tr><td><b>' + esc(r.userAtPc || '-') + '</b></td>' +
+        '<td>' + (r.tag ? '<span class="tag">' + esc(r.tag) + '</span>' : '-') + '</td>' +
+        '<td class="mono">' + esc(r.publicIp || '-') + '</td>' +
+        '<td class="dim">' + esc(seen) + '</td>' +
+        '<td class="mono dim">' + esc(r.clientId ? String(r.clientId).slice(0, 8) : '-') + '</td></tr>';
+    });
+    body.innerHTML = html;
+  }
+
+  function renderTasks(tasks) {
+    var body = document.getElementById('tasks-body');
+    document.getElementById('tasks-count').textContent = tasks.length;
+    if (!tasks.length) { body.innerHTML = '<tr><td colspan="4" class="dim pad">none configured</td></tr>'; return; }
+    var html = '';
+    tasks.forEach(function (t) {
+      var params = [t.param1, t.param2, t.param3, t.param4].filter(Boolean).join(' | ');
+      html += '<tr><td><b>' + esc(t.title) + '</b></td><td class="mono">' + esc(t.identifier || '-') + '</td>' +
+        '<td class="dim">' + esc(t.executionMode || '-') + '</td><td class="dim">' + esc(params || '-') + '</td></tr>';
+    });
+    body.innerHTML = html;
+  }
+
+  function loadLog() {
+    api('/api/log?limit=100').then(function (r) { return r.ok ? r.json() : []; }).then(function (entries) {
+      var view = document.getElementById('log-view');
+      if (!entries.length) { view.innerHTML = '<div class="dim">no entries yet</div>'; return; }
+      var html = '';
+      entries.forEach(function (e) {
+        html += '<div class="' + esc(e.level || '') + '">[' + esc(e.time || '') + '] ' + esc(e.message) + '</div>';
+      });
+      view.innerHTML = html;
+      view.scrollTop = 0;
+    }).catch(function () {});
+  }
+
+  function refreshAll() {
+    api('/api/version').then(function (r) {
+      if (r.status === 401) { showKeyBar('Invalid or missing API key', true); throw new Error('401'); }
+      return r.json();
+    }).then(function (j) { document.getElementById('srv-version').textContent = j.version || '-'; hideKeyBar(); }).catch(function (e) { if (e.message !== '401') showKeyBar('Cannot reach API', true); });
+    api('/api/clients').then(function (r) { return r.ok ? r.json() : []; }).then(renderClients).catch(function () {});
+    api('/api/offline').then(function (r) { return r.ok ? r.json() : []; }).then(renderOffline).catch(function () {});
+    api('/api/autotasks').then(function (r) { return r.ok ? r.json() : []; }).then(renderTasks).catch(function () {});
+  }
+
+  var sseAbort = null;
+  function connectEvents() {
+    if (sseAbort) sseAbort.abort();
+    sseAbort = new AbortController();
+    sseStatus.textContent = 'events: connecting...';
+    sseDot.className = '';
+    fetch('/api/events', { headers: { 'X-Api-Key': KEY }, signal: sseAbort.signal }).then(function (resp) {
+      if (!resp.ok || !resp.body) throw new Error('SSE ' + resp.status);
+      sseStatus.textContent = 'events: live';
+      sseDot.className = 'on';
+      var reader = resp.body.getReader();
+      var decoder = new TextDecoder();
+      var buf = '';
+      function pump() {
+        return reader.read().then(function (chunk) {
+          if (chunk.done) { sseStatus.textContent = 'events: closed'; sseDot.className = ''; return; }
+          buf += decoder.decode(chunk.value, { stream: true });
+          var parts = buf.split('\n\n');
+          buf = parts.pop();
+          parts.forEach(function (block) {
+            block.split('\n').forEach(function (line) {
+              if (line.indexOf('data:') === 0) {
+                try {
+                  var ev = JSON.parse(line.slice(5).trim());
+                  if (ev.type === 'hello') { addEvent('hello', 'connected to event stream', 'hello'); refreshAll(); }
+                  else if (ev.type === 'client_connected') { addEvent('client_connected', (ev.data && ev.data.userAtPc) || '', 'client_connected'); refreshAll(); }
+                  else if (ev.type === 'client_disconnected') { addEvent('client_disconnected', (ev.data && ev.data.userAtPc) || '', 'client_disconnected'); refreshAll(); }
+                  else if (ev.type === 'log') { addEvent('log', ev.data ? ('[' + (ev.data.level || '') + '] ' + ev.data.message) : '', 'log'); }
+                  else addEvent(ev.type, JSON.stringify(ev.data || {}));
+                } catch (e) { /* keepalive or non-json */ }
+              }
+            });
+          });
+          return pump();
+        });
+      }
+      return pump();
+    }).catch(function () {
+      sseStatus.textContent = 'events: offline (retry 10s)';
+      sseDot.className = '';
+      setTimeout(function () { if (KEY) connectEvents(); }, 10000);
+    });
+  }
+
+  document.getElementById('key-save').addEventListener('click', function () {
+    KEY = keyInput.value.trim();
+    localStorage.setItem('pulsar_api_key', KEY);
+    keyStatus.textContent = 'Connecting...';
+    keyStatus.className = 'dim';
+    refreshAll();
+    connectEvents();
+  });
+  keyInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') document.getElementById('key-save').click(); });
+  document.getElementById('btn-refresh').addEventListener('click', refreshAll);
+  document.getElementById('btn-log').addEventListener('click', loadLog);
+  document.getElementById('btn-clear').addEventListener('click', function () { document.getElementById('events-feed').innerHTML = '<div class="dim">cleared</div>'; });
+
+  if (KEY) { refreshAll(); connectEvents(); }
+  else showKeyBar('Enter the Web API key (Settings \u2192 Web API)');
+})();
+</script>
+</body>
+</html>

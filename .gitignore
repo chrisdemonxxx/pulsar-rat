@@ -1,0 +1,54 @@
+# Build outputs
+bin/
+obj/
+*.exe
+*.dll
+*.pdb
+*.so
+*.dylib
+
+# Visual Studio
+.vs/
+*.sln.user
+*.vcxproj.user
+*.suo
+
+# Node
+node_modules/
+package-lock.json
+yarn.lock
+
+# Logs
+*.log
+logs/
+
+# Temp files
+*.tmp
+*.swp
+*.swo
+*~
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.iml
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Build artifacts
+dist/
+publish/
+Release/
+Debug/
+
+# Dependencies
+packages/
+.nuget/
+
+# Config with sensitive data
+appsettings.*.json
+*.p12
