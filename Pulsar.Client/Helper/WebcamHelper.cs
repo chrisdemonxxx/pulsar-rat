@@ -15,29 +15,32 @@ namespace Pulsar.Client.Helper
         private VideoCaptureDevice _videoDevice;
         private int _width;
         private int _height;
-        private DateTime _lastFrameTime = DateTime.MinValue;
-        private readonly TimeSpan _frameInterval = TimeSpan.FromMilliseconds(33); // ~30fps
+        private long _captureVersion;
+        private long _deliveredCaptureVersion;
 
-        public void StartWebcam(int webcamIndex)
+        public bool StartWebcam(int webcamIndex)
         {
+            VideoCaptureDevice newDevice = null;
             try
             {
-                if (_isRunning) return;
+                if (_isRunning)
+                {
+                    StopWebcam();
+                }
 
                 FilterInfoCollection captureDevices = new FilterInfoCollection(FilterCategory.VideoInputDevice);
                 if (captureDevices.Count == 0)
                 {
-                    Debug.WriteLine("No webcam detected.");
-                    return;
+                    throw new InvalidOperationException("No webcam detected.");
                 }
 
                 if (webcamIndex < 0 || webcamIndex >= captureDevices.Count)
                 {
-                    Debug.WriteLine("Invalid selection.");
-                    return;
+                    throw new ArgumentOutOfRangeException(nameof(webcamIndex), "Invalid webcam device index.");
                 }
 
-                _videoDevice = new VideoCaptureDevice(captureDevices[webcamIndex].MonikerString);
+                newDevice = new VideoCaptureDevice(captureDevices[webcamIndex].MonikerString);
+                _videoDevice = newDevice;
 
                 var videoCapabilities = _videoDevice.VideoCapabilities;
                 if (videoCapabilities != null && videoCapabilities.Length > 0)
@@ -65,11 +68,36 @@ namespace Pulsar.Client.Helper
                 _videoDevice.NewFrame += new NewFrameEventHandler(FinalFrame_NewFrame);
                 _videoDevice.VideoSourceError += VideoDevice_VideoSourceError;
                 _videoDevice.Start();
-                _isRunning = true;
+                lock (_lock)
+                {
+                    _captureVersion = 0;
+                    _deliveredCaptureVersion = 0;
+                    _currentFrame?.Dispose();
+                    _currentFrame = null;
+                    _width = 0;
+                    _height = 0;
+                    _isRunning = true;
+                }
+                return true;
             }
             catch (Exception ex)
             {
                 Debug.WriteLine($"Error starting webcam: {ex.Message}");
+                if (newDevice != null)
+                {
+                    try
+                    {
+                        newDevice.NewFrame -= FinalFrame_NewFrame;
+                        newDevice.VideoSourceError -= VideoDevice_VideoSourceError;
+                        if (newDevice.IsRunning)
+                            newDevice.SignalToStop();
+                    }
+                    catch { }
+                    newDevice = null;
+                }
+                _isRunning = false;
+                _videoDevice = null;
+                throw;
             }
         }
 
@@ -94,47 +122,49 @@ namespace Pulsar.Client.Helper
 
         public void StopWebcam()
         {
-            if (!_isRunning) return;
+            VideoCaptureDevice device;
+            lock (_lock)
+            {
+                device = _videoDevice;
+                _isRunning = false;
+                _currentFrame?.Dispose();
+                _currentFrame = null;
+                _width = 0;
+                _height = 0;
+                _captureVersion = 0;
+                _deliveredCaptureVersion = 0;
+                _videoDevice = null;
+            }
+
+            if (device == null)
+                return;
 
             try
             {
-                _videoDevice.SignalToStop();
-                _videoDevice.WaitForStop();
+                device.NewFrame -= FinalFrame_NewFrame;
+                device.VideoSourceError -= VideoDevice_VideoSourceError;
+                if (device.IsRunning)
+                    device.SignalToStop();
             }
             catch (Exception ex)
             {
                 Debug.WriteLine($"Error stopping webcam: {ex.Message}");
             }
-            finally
-            {
-                if (_videoDevice != null)
-                {
-                    _videoDevice.NewFrame -= FinalFrame_NewFrame;
-                    _videoDevice.VideoSourceError -= VideoDevice_VideoSourceError;
-                    _videoDevice = null;
-                }
-                _isRunning = false;
-            }
         }
 
         public Bitmap GetLatestFrame()
         {
-            DateTime now = DateTime.UtcNow;
-
             lock (_lock)
             {
                 try
                 {
                     if (_currentFrame == null)
                         return null;
+                    if (_captureVersion == _deliveredCaptureVersion)
+                        return null;
 
-                    if ((now - _lastFrameTime) >= _frameInterval)
-                    {
-                        _lastFrameTime = now;
-                        return _currentFrame?.Clone() as Bitmap;
-                    }
-
-                    return null;
+                    _deliveredCaptureVersion = _captureVersion;
+                    return (Bitmap)_currentFrame.Clone();
                 }
                 catch (Exception ex)
                 {
@@ -174,6 +204,7 @@ namespace Pulsar.Client.Helper
                     _currentFrame = frame;
                     _width = _currentFrame.Width;
                     _height = _currentFrame.Height;
+                    _captureVersion++;
                 }
                 catch (Exception ex)
                 {

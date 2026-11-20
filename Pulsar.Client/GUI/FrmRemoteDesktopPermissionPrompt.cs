@@ -16,12 +16,13 @@ namespace Pulsar.Client.GUI
         private readonly System.Windows.Forms.Timer _countdownTimer;
         private int _remainingSeconds;
 
-        internal FrmRemoteDesktopPermissionPrompt(int timeoutSeconds)
+        internal FrmRemoteDesktopPermissionPrompt(int timeoutSeconds, string title = "Remote Desktop",
+            string requestText = null)
         {
             _remainingSeconds = timeoutSeconds <= 0 ? 30 : timeoutSeconds;
 
             // Neutral wording - no tool branding on a consent dialog.
-            Text = "Remote Desktop";
+            Text = title;
             StartPosition = FormStartPosition.CenterScreen;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
@@ -32,7 +33,7 @@ namespace Pulsar.Client.GUI
 
             var messageLabel = new Label
             {
-                Text = "A remote operator is requesting to view your desktop." + Environment.NewLine + Environment.NewLine +
+                Text = (requestText ?? "A remote operator is requesting to view your desktop.") + Environment.NewLine + Environment.NewLine +
                        "Allow this session?",
                 TextAlign = ContentAlignment.MiddleCenter,
                 Dock = DockStyle.Fill,
@@ -102,7 +103,8 @@ namespace Pulsar.Client.GUI
     /// </summary>
     internal static class RemoteDesktopPermissionPrompt
     {
-        internal static bool RequestUserConsent(int timeoutSeconds = 30)
+        internal static bool RequestUserConsent(int timeoutSeconds = 30, string title = "Remote Desktop",
+            string requestText = null)
         {
             bool allowed = false;
             using (var done = new ManualResetEventSlim(false))
@@ -111,7 +113,7 @@ namespace Pulsar.Client.GUI
                 {
                     try
                     {
-                        using (var prompt = new FrmRemoteDesktopPermissionPrompt(timeoutSeconds))
+                        using (var prompt = new FrmRemoteDesktopPermissionPrompt(timeoutSeconds, title, requestText))
                         {
                             allowed = prompt.ShowDialog() == DialogResult.Yes;
                         }

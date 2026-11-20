@@ -8,11 +8,30 @@ using System.Collections.Generic;
 using System.Windows.Forms;
 using Pulsar.Server.Properties;
 using Pulsar.Server.Forms.DarkMode;
+using Pulsar.Common.Enums;
 
 namespace Pulsar.Server.Forms
 {
+    internal sealed class MicrophoneDeviceItem
+    {
+        public int DeviceIndex { get; }
+        public string Name { get; }
+
+        public MicrophoneDeviceItem(int deviceIndex, string name)
+        {
+            DeviceIndex = deviceIndex;
+            Name = name;
+        }
+
+        public override string ToString() => Name;
+    }
+
     public partial class FrmRemoteMic : Form
     {
+        private readonly System.Windows.Forms.Timer _healthTimer;
+        private MediaStreamStatus _streamStatus = MediaStreamStatus.Stopped;
+        private DateTime _lastAudioUtc;
+
         /// <summary>
         /// The client which can be used for the remote audio.
         /// </summary>
@@ -55,6 +74,11 @@ namespace Pulsar.Server.Forms
         {
             _connectClient = client;
             _remoteAudioHandler = new AudioHandler(client);
+            _healthTimer = new System.Windows.Forms.Timer
+            {
+                Interval = 1000
+            };
+            _healthTimer.Tick += HealthTimer_Tick;
 
             RegisterMessageHandler();
             InitializeComponent();
@@ -71,8 +95,29 @@ namespace Pulsar.Server.Forms
         {
             if (!connected)
             {
-                this.Invoke((MethodInvoker)this.Close);
+                if (InvokeRequired)
+                {
+                    BeginInvoke(new MethodInvoker(ResetForDisconnect));
+                    BeginInvoke(new MethodInvoker(Close));
+                }
+                else
+                {
+                    ResetForDisconnect();
+                    Close();
+                }
             }
+        }
+
+        private void ResetForDisconnect()
+        {
+            _healthTimer.Stop();
+            _streamStatus = MediaStreamStatus.Stopped;
+            _lastAudioUtc = DateTime.MinValue;
+            audioVisualizer.Reset();
+            ToggleConfigurationControls(false);
+            button1.Enabled = cbDevices.Items.Count > 0;
+            button2.Enabled = false;
+            UpdateStreamStatusTitle();
         }
 
         /// <summary>
@@ -83,6 +128,7 @@ namespace Pulsar.Server.Forms
             _connectClient.ClientState += ClientDisconnected;
             _remoteAudioHandler.MicrophoneChanged += MicrophoneChanged;
             _remoteAudioHandler.AudioDataReceived += AudioDataReceived;
+            _remoteAudioHandler.StreamStatusChanged += StreamStatusChanged;
             MessageHandler.Register(_remoteAudioHandler);
         }
 
@@ -94,6 +140,7 @@ namespace Pulsar.Server.Forms
             MessageHandler.Unregister(_remoteAudioHandler);
             _remoteAudioHandler.AudioDataReceived -= AudioDataReceived;
             _remoteAudioHandler.MicrophoneChanged -= MicrophoneChanged;
+            _remoteAudioHandler.StreamStatusChanged -= StreamStatusChanged;
             _connectClient.ClientState -= ClientDisconnected;
         }
 
@@ -102,18 +149,39 @@ namespace Pulsar.Server.Forms
         /// </summary>
         private void AudioDataReceived(object sender, byte[] audioData)
         {
-            if (audioData == null || audioData.Length == 0)
+            if (IsDisposed || audioData == null || audioData.Length == 0)
                 return;
 
+            _lastAudioUtc = DateTime.UtcNow;
             float level = CalculateAudioLevel(audioData);
 
             if (audioVisualizer.InvokeRequired)
             {
-                audioVisualizer.BeginInvoke(new Action(() => audioVisualizer.UpdateLevel(level)));
+                audioVisualizer.BeginInvoke(new Action(() =>
+                {
+                    if (IsDisposed)
+                        return;
+                    RecoverFromStalledOrStarting();
+                    audioVisualizer.UpdateLevel(level);
+                }));
             }
             else
             {
+                RecoverFromStalledOrStarting();
                 audioVisualizer.UpdateLevel(level);
+            }
+        }
+
+        private void RecoverFromStalledOrStarting()
+        {
+            if (_streamStatus == MediaStreamStatus.Stalled ||
+                _streamStatus == MediaStreamStatus.Starting)
+            {
+                _streamStatus = MediaStreamStatus.Active;
+                ToggleConfigurationControls(true);
+                button1.Enabled = false;
+                button2.Enabled = true;
+                UpdateStreamStatusTitle();
             }
         }
 
@@ -148,12 +216,24 @@ namespace Pulsar.Server.Forms
         {
             try
             {
+                var device = cbDevices.SelectedItem as MicrophoneDeviceItem;
+                if (device == null)
+                {
+                    ToggleConfigurationControls(false);
+                    throw new InvalidOperationException("No microphone device selected.");
+                }
+                _streamStatus = MediaStreamStatus.Starting;
+                _lastAudioUtc = DateTime.UtcNow;
                 ToggleConfigurationControls(true);
-                _remoteAudioHandler.BeginReceiveAudio(cbDevices.SelectedIndex);
+                button1.Enabled = false;
+                button2.Enabled = true;
+                _healthTimer.Start();
+                UpdateStreamStatusTitle();
+                _remoteAudioHandler.BeginReceiveAudio(device.DeviceIndex);
             }
             catch (Exception ex)
             {
-                ToggleConfigurationControls(false);
+                ApplyStoppedOrErrorState(MediaStreamStatus.Error, ex.Message);
                 MessageBox.Show($"Failed to start microphone stream: {ex.Message}",
                     "Microphone Error",
                     MessageBoxButtons.OK,
@@ -168,14 +248,15 @@ namespace Pulsar.Server.Forms
         {
             try
             {
-                ToggleConfigurationControls(false);
-                _remoteAudioHandler.EndReceiveAudio(cbDevices.SelectedIndex);
-                audioVisualizer.Reset();
+                var device = cbDevices.SelectedItem as MicrophoneDeviceItem;
+                int deviceIndex = device?.DeviceIndex ?? 0;
+                _remoteAudioHandler.EndReceiveAudio(deviceIndex);
+                ApplyStoppedOrErrorState(MediaStreamStatus.Stopped, null);
             }
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"Error stopping microphone stream: {ex.Message}");
-                ToggleConfigurationControls(false);
+                ApplyStoppedOrErrorState(MediaStreamStatus.Error, ex.Message);
             }
         }
 
@@ -196,17 +277,189 @@ namespace Pulsar.Server.Forms
         /// <param name="devices">The currently available microphone devices.</param>
         private void MicrophoneChanged(object sender, List<Tuple<int, string>> devices)
         {
-            cbDevices.Items.Clear();
-            foreach (Tuple<int, string> device in devices)
+            if (IsDisposed)
+                return;
+
+            if (InvokeRequired)
             {
-                cbDevices.Items.Add(device.Item2);
+                BeginInvoke(new Action(() => ApplyMicrophoneChanged(devices)));
             }
-            cbDevices.SelectedIndex = 0;
+            else
+            {
+                ApplyMicrophoneChanged(devices);
+            }
+        }
+
+        private void ApplyMicrophoneChanged(List<Tuple<int, string>> devices)
+        {
+            if (IsDisposed)
+                return;
+
+            cbDevices.Items.Clear();
+            if (devices != null)
+            {
+                foreach (Tuple<int, string> device in devices)
+                {
+                    cbDevices.Items.Add(new MicrophoneDeviceItem(device.Item1, device.Item2));
+                }
+            }
+            cbDevices.SelectedIndex = cbDevices.Items.Count > 0 ? 0 : -1;
+
+            if (_streamStatus == MediaStreamStatus.Active ||
+                _streamStatus == MediaStreamStatus.Starting ||
+                _streamStatus == MediaStreamStatus.Stalled)
+            {
+                button1.Enabled = false;
+                button2.Enabled = true;
+            }
+            else
+            {
+                button1.Enabled = cbDevices.Items.Count > 0;
+                button2.Enabled = false;
+            }
+        }
+
+        private void StreamStatusChanged(object sender,
+            AudioHandler.MediaStreamStatusEventArgs args)
+        {
+            if (IsDisposed)
+                return;
+
+            if (InvokeRequired)
+            {
+                BeginInvoke(new Action(() => ApplyStreamStatus(args)));
+            }
+            else
+            {
+                ApplyStreamStatus(args);
+            }
+        }
+
+        private void ApplyStreamStatus(AudioHandler.MediaStreamStatusEventArgs args)
+        {
+            if (IsDisposed)
+                return;
+
+            _streamStatus = args.Status;
+
+            switch (args.Status)
+            {
+                case MediaStreamStatus.Active:
+                case MediaStreamStatus.Starting:
+                    _lastAudioUtc = DateTime.UtcNow;
+                    ToggleConfigurationControls(true);
+                    button1.Enabled = false;
+                    button2.Enabled = true;
+                    _healthTimer.Start();
+                    break;
+
+                case MediaStreamStatus.Stalled:
+                    ToggleConfigurationControls(true);
+                    button1.Enabled = false;
+                    button2.Enabled = true;
+                    break;
+
+                case MediaStreamStatus.Stopped:
+                    ApplyStoppedOrErrorState(MediaStreamStatus.Stopped, null);
+                    break;
+
+                case MediaStreamStatus.Denied:
+                case MediaStreamStatus.Unavailable:
+                case MediaStreamStatus.InvalidDevice:
+                case MediaStreamStatus.DeviceBusy:
+                case MediaStreamStatus.FormatUnsupported:
+                case MediaStreamStatus.Error:
+                    ApplyStoppedOrErrorState(args.Status, args.ErrorMessage);
+                    if (!string.IsNullOrWhiteSpace(args.ErrorMessage))
+                    {
+                        MessageBox.Show(args.ErrorMessage, "Remote microphone",
+                            MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
+                    break;
+            }
+
+            UpdateStreamStatusTitle();
+        }
+
+        private void ApplyStoppedOrErrorState(MediaStreamStatus status, string errorMessage)
+        {
+            _healthTimer.Stop();
+            _streamStatus = status;
+            _lastAudioUtc = DateTime.MinValue;
+            ToggleConfigurationControls(false);
+            button1.Enabled = cbDevices.Items.Count > 0;
+            button2.Enabled = false;
+            audioVisualizer.Reset();
+            UpdateStreamStatusTitle();
+
+            if (status == MediaStreamStatus.Error &&
+                !string.IsNullOrWhiteSpace(errorMessage) &&
+                FindForm() == this)
+            {
+                // StartStream and StopStream have their own user-facing error handling.
+            }
+        }
+
+        private void UpdateStreamStatusTitle()
+        {
+            string statusName;
+            switch (_streamStatus)
+            {
+                case MediaStreamStatus.Starting:
+                    statusName = "Starting";
+                    break;
+                case MediaStreamStatus.Active:
+                    statusName = "Active";
+                    break;
+                case MediaStreamStatus.Stalled:
+                    statusName = "Stalled";
+                    break;
+                case MediaStreamStatus.Denied:
+                    statusName = "Denied";
+                    break;
+                case MediaStreamStatus.Error:
+                    statusName = "Error";
+                    break;
+                case MediaStreamStatus.Stopped:
+                    statusName = "Stopped";
+                    break;
+                default:
+                    statusName = _streamStatus.ToString();
+                    break;
+            }
+
+            this.Text = $"{WindowHelper.GetWindowTitle("Remote Microphone", _connectClient)} - {statusName}";
+        }
+
+        private void HealthTimer_Tick(object sender, EventArgs e)
+        {
+            if (_streamStatus == MediaStreamStatus.Stopped)
+                return;
+
+            double idleSeconds = _lastAudioUtc == DateTime.MinValue
+                ? 0
+                : (DateTime.UtcNow - _lastAudioUtc).TotalSeconds;
+
+            if (_streamStatus == MediaStreamStatus.Starting && idleSeconds >= 10)
+            {
+                _streamStatus = MediaStreamStatus.Stalled;
+                button1.Enabled = false;
+                button2.Enabled = true;
+                UpdateStreamStatusTitle();
+            }
+            else if (_streamStatus == MediaStreamStatus.Active && idleSeconds >= 5)
+            {
+                _streamStatus = MediaStreamStatus.Stalled;
+                button1.Enabled = false;
+                button2.Enabled = true;
+                UpdateStreamStatusTitle();
+            }
         }
 
         private void FrmRemoteAudio_Load(object sender, EventArgs e)
         {
-            this.Text = WindowHelper.GetWindowTitle("Audio", _connectClient);
+            _streamStatus = MediaStreamStatus.Stopped;
+            UpdateStreamStatusTitle();
 
             _remoteAudioHandler.RefreshMicrophones();
         }
@@ -216,6 +469,7 @@ namespace Pulsar.Server.Forms
             try
             {
                 // all cleanup logic goes here
+                _healthTimer.Stop();
                 if (_remoteAudioHandler.IsStarted)
                 {
                     try
@@ -245,6 +499,8 @@ namespace Pulsar.Server.Forms
                 {
                     System.Diagnostics.Debug.WriteLine($"Error disposing microphone handler: {ex.Message}");
                 }
+
+                _healthTimer.Dispose();
             }
             catch (Exception ex)
             {

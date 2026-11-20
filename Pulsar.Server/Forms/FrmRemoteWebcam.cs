@@ -9,11 +9,17 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Windows.Forms;
+using Pulsar.Common.Enums;
 
 namespace Pulsar.Server.Forms
 {
     public partial class FrmRemoteWebcam : Form
     {
+        private readonly System.Windows.Forms.Timer _healthTimer;
+        private MediaStreamStatus _streamStatus = MediaStreamStatus.Stopped;
+        private DateTime _lastFrameUtc;
+        private string _fpsText = string.Empty;
+
         /// <summary>
         /// The client which can be used for the remote webcam.
         /// </summary>
@@ -28,8 +34,10 @@ namespace Pulsar.Server.Forms
         /// Holds the opened remote webcam form for each client.
         /// </summary>
         private static readonly Dictionary<Client, FrmRemoteWebcam> OpenedForms = new Dictionary<Client, FrmRemoteWebcam>();
+        private static readonly object OpenedFormsLock = new object();
+        private bool _closing;
 
-    private int _framesForSize = 0;
+        private int _framesForSize = 0;
 
         /// <summary>
         /// Creates a new remote webcam form for the client or gets the current open form, if there exists one already.
@@ -40,14 +48,28 @@ namespace Pulsar.Server.Forms
         /// </returns>
         public static FrmRemoteWebcam CreateNewOrGetExisting(Client client)
         {
-            if (OpenedForms.ContainsKey(client))
+            lock (OpenedFormsLock)
             {
-                return OpenedForms[client];
+                if (OpenedForms.TryGetValue(client, out FrmRemoteWebcam existing) &&
+                    existing != null && !existing.IsDisposed)
+                {
+                    return existing;
+                }
+
+                if (existing != null)
+                    OpenedForms.Remove(client);
+
+                FrmRemoteWebcam r = new FrmRemoteWebcam(client);
+                r.Disposed += (sender, args) =>
+                {
+                    lock (OpenedFormsLock)
+                    {
+                        OpenedForms.Remove(client);
+                    }
+                };
+                OpenedForms.Add(client, r);
+                return r;
             }
-            FrmRemoteWebcam r = new FrmRemoteWebcam(client);
-            r.Disposed += (sender, args) => OpenedForms.Remove(client);
-            OpenedForms.Add(client, r);
-            return r;
         }
 
         /// <summary>
@@ -58,6 +80,11 @@ namespace Pulsar.Server.Forms
         {
             _connectClient = client;
             _RemoteWebcamHandler = new RemoteWebcamHandler(client);
+            _healthTimer = new System.Windows.Forms.Timer
+            {
+                Interval = 1000
+            };
+            _healthTimer.Tick += HealthTimer_Tick;
 
             RegisterMessageHandler();
             InitializeComponent();
@@ -75,8 +102,29 @@ namespace Pulsar.Server.Forms
         {
             if (!connected)
             {
-                this.Invoke((MethodInvoker)this.Close);
+                if (InvokeRequired)
+                {
+                    BeginInvoke(new MethodInvoker(ResetForDisconnect));
+                    BeginInvoke(new MethodInvoker(Close));
+                }
+                else
+                {
+                    ResetForDisconnect();
+                    Close();
+                }
             }
+        }
+
+        private void ResetForDisconnect()
+        {
+            _healthTimer.Stop();
+            _streamStatus = MediaStreamStatus.Stopped;
+            _lastFrameUtc = DateTime.MinValue;
+            _fpsText = string.Empty;
+            sizeLabelCounter.Text = "Size:";
+            picWebcam.Stop();
+            picWebcam.UnsetFrameUpdatedEvent(frameCounter_FrameUpdated);
+            ToggleConfigurationControls(false);
         }
 
         /// <summary>
@@ -87,6 +135,7 @@ namespace Pulsar.Server.Forms
             _connectClient.ClientState += ClientDisconnected;
             _RemoteWebcamHandler.DisplaysChanged += DisplaysChanged;
             _RemoteWebcamHandler.ProgressChanged += UpdateImage;
+            _RemoteWebcamHandler.StreamStatusChanged += StreamStatusChanged;
             MessageHandler.Register(_RemoteWebcamHandler);
         }
 
@@ -98,6 +147,7 @@ namespace Pulsar.Server.Forms
             MessageHandler.Unregister(_RemoteWebcamHandler);
             _RemoteWebcamHandler.DisplaysChanged -= DisplaysChanged;
             _RemoteWebcamHandler.ProgressChanged -= UpdateImage;
+            _RemoteWebcamHandler.StreamStatusChanged -= StreamStatusChanged;
             _connectClient.ClientState -= ClientDisconnected;
         }
 
@@ -120,6 +170,11 @@ namespace Pulsar.Server.Forms
         /// </summary>
         private void StartStream()
         {
+            _streamStatus = MediaStreamStatus.Starting;
+            _lastFrameUtc = DateTime.UtcNow;
+            _fpsText = string.Empty;
+            UpdateStreamStatusTitle();
+            _healthTimer.Start();
             ToggleConfigurationControls(true);
 
             picWebcam.Start();
@@ -136,7 +191,13 @@ namespace Pulsar.Server.Forms
         /// </summary>
         private void StopStream()
         {
+            _healthTimer.Stop();
+            _streamStatus = MediaStreamStatus.Stopped;
+            _lastFrameUtc = DateTime.MinValue;
+            _fpsText = string.Empty;
             ToggleConfigurationControls(false);
+            UpdateStreamStatusTitle();
+            sizeLabelCounter.Text = "Size:";
 
             picWebcam.Stop();
             // Unsubscribe from the frame counter. It will be re-created when starting again.
@@ -190,6 +251,149 @@ namespace Pulsar.Server.Forms
             cbMonitors.SelectedIndex = 0;
         }
 
+        private void StreamStatusChanged(object sender,
+            RemoteWebcamHandler.MediaStreamStatusEventArgs args)
+        {
+            if (_closing || IsDisposed)
+                return;
+
+            if (InvokeRequired)
+            {
+                BeginInvoke(new Action(() => ApplyStreamStatus(args)));
+            }
+            else
+            {
+                ApplyStreamStatus(args);
+            }
+        }
+
+        private void ApplyStreamStatus(RemoteWebcamHandler.MediaStreamStatusEventArgs args)
+        {
+            _streamStatus = args.Status;
+
+            switch (args.Status)
+            {
+                case MediaStreamStatus.Active:
+                    _lastFrameUtc = DateTime.UtcNow;
+                    btnStart.Enabled = false;
+                    btnStop.Enabled = true;
+                    barQuality.Enabled = false;
+                    cbMonitors.Enabled = false;
+                    _healthTimer.Start();
+                    break;
+
+                case MediaStreamStatus.Starting:
+                    _lastFrameUtc = DateTime.UtcNow;
+                    btnStart.Enabled = false;
+                    btnStop.Enabled = true;
+                    barQuality.Enabled = false;
+                    cbMonitors.Enabled = false;
+                    _healthTimer.Start();
+                    break;
+
+                case MediaStreamStatus.Stalled:
+                    btnStart.Enabled = false;
+                    btnStop.Enabled = true;
+                    barQuality.Enabled = false;
+                    cbMonitors.Enabled = false;
+                    break;
+
+                case MediaStreamStatus.Stopped:
+                    _healthTimer.Stop();
+                    _lastFrameUtc = DateTime.MinValue;
+                    _fpsText = string.Empty;
+                    ToggleConfigurationControls(false);
+                    picWebcam.Stop();
+                    picWebcam.UnsetFrameUpdatedEvent(frameCounter_FrameUpdated);
+                    break;
+
+                case MediaStreamStatus.Denied:
+                case MediaStreamStatus.Unavailable:
+                case MediaStreamStatus.InvalidDevice:
+                case MediaStreamStatus.DeviceBusy:
+                case MediaStreamStatus.FormatUnsupported:
+                case MediaStreamStatus.Error:
+                    _healthTimer.Stop();
+                    _lastFrameUtc = DateTime.MinValue;
+                    _fpsText = string.Empty;
+                    ToggleConfigurationControls(false);
+                    picWebcam.Stop();
+                    picWebcam.UnsetFrameUpdatedEvent(frameCounter_FrameUpdated);
+                    break;
+            }
+
+            UpdateStreamStatusTitle();
+
+            if (args.Status != MediaStreamStatus.Active &&
+                args.Status != MediaStreamStatus.Starting &&
+                args.Status != MediaStreamStatus.Stalled &&
+                args.Status != MediaStreamStatus.Stopped &&
+                !string.IsNullOrWhiteSpace(args.ErrorMessage))
+            {
+                MessageBox.Show(args.ErrorMessage, "Remote webcam",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
+        private void UpdateStreamStatusTitle()
+        {
+            string statusName;
+            switch (_streamStatus)
+            {
+                case MediaStreamStatus.Starting:
+                    statusName = "Starting";
+                    break;
+                case MediaStreamStatus.Active:
+                    statusName = "Active";
+                    break;
+                case MediaStreamStatus.Stalled:
+                    statusName = "Stalled";
+                    break;
+                case MediaStreamStatus.Denied:
+                    statusName = "Denied";
+                    break;
+                case MediaStreamStatus.Error:
+                    statusName = "Error";
+                    break;
+                case MediaStreamStatus.Stopped:
+                    statusName = "Stopped";
+                    break;
+                default:
+                    statusName = _streamStatus.ToString();
+                    break;
+            }
+
+            this.Text = $"{WindowHelper.GetWindowTitle("Remote Webcam", _connectClient)} - {statusName}" +
+                (string.IsNullOrEmpty(_fpsText) ? string.Empty : $" - {_fpsText}");
+        }
+
+        private void HealthTimer_Tick(object sender, EventArgs e)
+        {
+            if (_streamStatus == MediaStreamStatus.Stopped)
+                return;
+
+            double idleSeconds = _lastFrameUtc == DateTime.MinValue
+                ? 0
+                : (DateTime.UtcNow - _lastFrameUtc).TotalSeconds;
+
+            if (_streamStatus == MediaStreamStatus.Starting &&
+                idleSeconds >= 10)
+            {
+                _streamStatus = MediaStreamStatus.Stalled;
+                btnStart.Enabled = false;
+                btnStop.Enabled = true;
+                UpdateStreamStatusTitle();
+            }
+            else if (_streamStatus == MediaStreamStatus.Active &&
+                     idleSeconds >= 5)
+            {
+                _streamStatus = MediaStreamStatus.Stalled;
+                btnStart.Enabled = false;
+                btnStop.Enabled = true;
+                UpdateStreamStatusTitle();
+            }
+        }
+
         /// <summary>
         /// Updates the current webcam image by drawing it to the webcam picturebox.
         /// </summary>
@@ -197,6 +401,22 @@ namespace Pulsar.Server.Forms
         /// <param name="bmp">The new webcam image to draw.</param>
         private void UpdateImage(object sender, Bitmap bmp)
         {
+            if (_closing || IsDisposed)
+                return;
+
+            if (InvokeRequired)
+            {
+                BeginInvoke(new Action(() => UpdateImage(sender, bmp)));
+                return;
+            }
+
+            _lastFrameUtc = DateTime.UtcNow;
+            if (_streamStatus == MediaStreamStatus.Stalled ||
+                _streamStatus == MediaStreamStatus.Starting)
+            {
+                ApplyStreamStatus(new RemoteWebcamHandler.MediaStreamStatusEventArgs(
+                    MediaStreamStatus.Active, null, null));
+            }
             _framesForSize++;
             if (_framesForSize >= 60)
             {
@@ -216,6 +436,8 @@ namespace Pulsar.Server.Forms
         private void FrmRemoteWebcam_Load(object sender, EventArgs e)
         {
             this.Text = WindowHelper.GetWindowTitle("Remote Webcam", _connectClient);
+            _streamStatus = MediaStreamStatus.Stopped;
+            UpdateStreamStatusTitle();
 
             OnResize(EventArgs.Empty); // trigger resize event to align controls 
 
@@ -229,16 +451,23 @@ namespace Pulsar.Server.Forms
         private void frameCounter_FrameUpdated(FrameUpdatedEventArgs e)
         {
             float fpsToShow = _RemoteWebcamHandler.CurrentFps > 0 ? _RemoteWebcamHandler.CurrentFps : e.CurrentFramesPerSecond;
-            this.Text = string.Format("{0} - FPS: {1}", WindowHelper.GetWindowTitle("Remote Webcam", _connectClient), fpsToShow.ToString("0.00"));
+            _fpsText = $"FPS: {fpsToShow:0.00}";
+            UpdateStreamStatusTitle();
         }
 
         private void FrmRemoteWebcam_FormClosing(object sender, FormClosingEventArgs e)
         {
+            if (_closing)
+                return;
+            _closing = true;
+
             // all cleanup logic goes here
             UnsubscribeEvents();
+            _healthTimer.Stop();
             if (_RemoteWebcamHandler.IsStarted) StopStream();
             UnregisterMessageHandler();
             _RemoteWebcamHandler.Dispose();
+            _healthTimer.Dispose();
             picWebcam.GetImageSafe?.Dispose();
             picWebcam.GetImageSafe = null;
         }

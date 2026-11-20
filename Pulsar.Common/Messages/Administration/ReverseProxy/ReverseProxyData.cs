@@ -11,5 +11,17 @@ namespace Pulsar.Common.Messages.Administration.ReverseProxy
 
         [Key(2)]
         public byte[] Data { get; set; }
+
+        [Key(3)]
+        public string ListenerSessionId { get; set; }
+
+        [Key(4)]
+        public string TunnelId { get; set; }
+
+        [Key(5)]
+        public long Sequence { get; set; }
+
+        [Key(6)]
+        public string OriginClientId { get; set; }
     }
 }

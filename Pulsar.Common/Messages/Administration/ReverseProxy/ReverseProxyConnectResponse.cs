@@ -20,5 +20,23 @@ namespace Pulsar.Common.Messages.Administration.ReverseProxy
 
         [Key(5)]
         public string HostName { get; set; }
+
+        [Key(6)]
+        public string ListenerSessionId { get; set; }
+
+        [Key(7)]
+        public string TunnelId { get; set; }
+
+        [Key(8)]
+        public long Sequence { get; set; }
+
+        [Key(9)]
+        public Pulsar.Common.Enums.ReverseProxyStatus Status { get; set; } = Pulsar.Common.Enums.ReverseProxyStatus.PendingConnect;
+
+        [Key(10)]
+        public string ErrorCode { get; set; }
+
+        [Key(11)]
+        public string ErrorMessage { get; set; }
     }
 }

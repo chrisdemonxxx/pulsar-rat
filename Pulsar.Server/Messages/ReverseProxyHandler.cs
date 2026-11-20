@@ -1,4 +1,5 @@
 ﻿using Pulsar.Common.Messages;
+using Pulsar.Common.Enums;
 using Pulsar.Common.Messages.Administration.ReverseProxy;
 using Pulsar.Common.Messages.Other;
 using Pulsar.Common.Networking;
@@ -23,6 +24,23 @@ namespace Pulsar.Server.Messages
         /// The reverse proxy server to accept & serve SOCKS5 connections.
         /// </summary>
         private readonly ReverseProxyServer _socksServer;
+        public ReverseProxyStatus Status
+        {
+            get
+            {
+                return _socksServer.IsStarted
+                    ? ReverseProxyStatus.Listening
+                    : ReverseProxyStatus.Stopped;
+            }
+        }
+        public string BindAddress
+        {
+            get { return _socksServer.BindAddress; }
+        }
+        public ushort Port
+        {
+            get { return _socksServer.Port; }
+        }
 
         /// <summary>
         /// Initializes a new instance of the <see cref="ReverseProxyHandler"/> class using the given clients.
@@ -83,18 +101,41 @@ namespace Pulsar.Server.Messages
         private void Execute(ISender client, ReverseProxyConnectResponse message)
         {
             ReverseProxyClient socksClient = _socksServer.GetClientByConnectionId(message.ConnectionId);
+            if (socksClient == null ||
+                !string.Equals(socksClient.ListenerSessionId, message.ListenerSessionId, StringComparison.Ordinal) ||
+                !string.Equals(socksClient.TunnelId, message.TunnelId, StringComparison.Ordinal) ||
+                !socksClient.Client.Equals(client))
+            {
+                return;
+            }
             socksClient?.HandleCommandResponse(message);
         }
 
         private void Execute(ISender client, ReverseProxyData message)
         {
             ReverseProxyClient socksClient = _socksServer.GetClientByConnectionId(message.ConnectionId);
+            if (socksClient == null ||
+                message.Data == null ||
+                !ReverseProxyValidation.IsValidPayloadLength(message.Data.Length) ||
+                !string.Equals(socksClient.ListenerSessionId, message.ListenerSessionId, StringComparison.Ordinal) ||
+                !string.Equals(socksClient.TunnelId, message.TunnelId, StringComparison.Ordinal) ||
+                !socksClient.Client.Equals(client))
+            {
+                return;
+            }
             socksClient?.SendToClient(message.Data);
         }
 
         private void Execute(ISender client, ReverseProxyDisconnect message)
         {
             ReverseProxyClient socksClient = _socksServer.GetClientByConnectionId(message.ConnectionId);
+            if (socksClient == null ||
+                !string.Equals(socksClient.ListenerSessionId, message.ListenerSessionId, StringComparison.Ordinal) ||
+                !string.Equals(socksClient.TunnelId, message.TunnelId, StringComparison.Ordinal) ||
+                !socksClient.Client.Equals(client))
+            {
+                return;
+            }
             socksClient?.Disconnect();
         }
 

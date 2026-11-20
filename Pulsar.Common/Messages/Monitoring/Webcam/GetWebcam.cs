@@ -27,5 +27,11 @@ namespace Pulsar.Common.Messages.Webcam
 
         [Key(7)]
         public bool IsBufferedMode { get; set; } = true;
+
+        [Key(8)]
+        public string SessionId { get; set; }
+
+        [Key(9)]
+        public long Sequence { get; set; }
     }
 }

@@ -1,4 +1,5 @@
 ﻿using NAudio.Wave;
+using Pulsar.Common.Enums;
 using Pulsar.Common.Messages;
 using Pulsar.Common.Messages.Audio;
 using Pulsar.Common.Messages.Other;
@@ -8,6 +9,8 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Threading;
+using Pulsar.Common.Enums;
 
 namespace Pulsar.Server.Messages
 {
@@ -58,6 +61,22 @@ namespace Pulsar.Server.Messages
         /// </remarks>
         public event AudioDataReceivedEventHandler AudioDataReceived;
 
+        public event EventHandler<MediaStreamStatusEventArgs> StreamStatusChanged;
+
+        public sealed class MediaStreamStatusEventArgs : EventArgs
+        {
+            public MediaStreamStatus Status { get; }
+            public string ErrorCode { get; }
+            public string ErrorMessage { get; }
+
+            public MediaStreamStatusEventArgs(MediaStreamStatus status, string errorCode, string errorMessage)
+            {
+                Status = status;
+                ErrorCode = errorCode;
+                ErrorMessage = errorMessage;
+            }
+        }
+
         /// <summary>
         /// Reports changed microphones.
         /// </summary>
@@ -82,6 +101,18 @@ namespace Pulsar.Server.Messages
                 var handler = AudioDataReceived;
                 handler?.Invoke(this, (byte[])data);
             }, audioData);
+        }
+
+        private void OnStreamStatusChanged(MediaStreamStatus status, string errorCode, string errorMessage)
+        {
+            var handler = StreamStatusChanged;
+            if (handler == null)
+                return;
+
+            SynchronizationContext.Post(_ =>
+            {
+                handler?.Invoke(this, new MediaStreamStatusEventArgs(status, errorCode, errorMessage));
+            }, null);
         }
 
         /// <summary>
@@ -112,6 +143,11 @@ namespace Pulsar.Server.Messages
         /// Holds the desired bitrate
         /// </summary>
         public int _bitrate = 44100;
+        private string _sessionId;
+        private int _channels = 1;
+        private long _lastSequence = 0;
+        private int _deviceIndex = -1;
+        private bool _disposed;
 
         /// <inheritdoc />
         public override bool CanExecute(IMessage message) => message is GetMicrophoneResponse || message is GetMicrophoneDeviceResponse;
@@ -142,13 +178,21 @@ namespace Pulsar.Server.Messages
         {
             lock (_syncLock)
             {
+                if (_disposed)
+                    return;
+
                 try
                 {
                     if (IsStarted)
                     {
                         try
                         {
-                            _client.Send(new GetMicrophone { DeviceIndex = device, Destroy = true });
+                            _client.Send(new GetMicrophone
+                            {
+                                DeviceIndex = device,
+                                Destroy = true,
+                                SessionId = _sessionId
+                            });
                         }
                         catch (Exception ex)
                         {
@@ -156,34 +200,31 @@ namespace Pulsar.Server.Messages
                         }
                     }
 
-                    if (_audioStream != null)
-                    {
-                        try
-                        {
-                            _audioStream.Stop();
-                            _audioStream.Dispose();
-                        }
-                        catch (Exception ex)
-                        {
-                            Debug.WriteLine($"Error cleaning up existing microphone stream: {ex.Message}");
-                        }
-                        _audioStream = null;
-                        _provider = null;
-                    }
+                    DisposePlaybackLocked();
 
                     IsStarted = true;
-                    _provider = new BufferedWaveProvider(new WaveFormat());
-                    _audioStream = new WaveOut();
-                    _audioStream.Init(_provider);
-                    _audioStream.Play();
-                    _client.Send(new GetMicrophone { CreateNew = true, DeviceIndex = device, Bitrate = _bitrate });
+                    _deviceIndex = device;
+                    _sessionId = Guid.NewGuid().ToString("N");
+                    Interlocked.Exchange(ref _lastSequence, 0);
+                    _channels = 1;
+                    EnsurePlaybackLocked(_channels);
+                    _client.Send(new GetMicrophone
+                    {
+                        CreateNew = true,
+                        DeviceIndex = device,
+                        Bitrate = _bitrate,
+                        Channels = _channels,
+                        SessionId = _sessionId
+                    });
                 }
                 catch (NAudio.MmException ex)
                 {
                     // Handle the exception gracefully
                     IsStarted = false;
-                    _provider = null;
-                    _audioStream = null;
+                    DisposePlaybackLocked();
+                    _sessionId = null;
+                    _deviceIndex = -1;
+                    OnStreamStatusChanged(MediaStreamStatus.Unavailable, "MEDIA_OUTPUT_ERROR", ex.Message);
                     System.Windows.Forms.MessageBox.Show($"Error initializing audio device: {ex.Message}",
                         "Audio Error",
                         System.Windows.Forms.MessageBoxButtons.OK,
@@ -193,8 +234,10 @@ namespace Pulsar.Server.Messages
                 {
                     // Handle any other unexpected exceptions
                     IsStarted = false;
-                    _provider = null;
-                    _audioStream = null;
+                    DisposePlaybackLocked();
+                    _sessionId = null;
+                    _deviceIndex = -1;
+                    OnStreamStatusChanged(MediaStreamStatus.Error, "MEDIA_OUTPUT_ERROR", ex.Message);
                     System.Windows.Forms.MessageBox.Show($"An unexpected error occurred: {ex.Message}",
                         "Audio Error",
                         System.Windows.Forms.MessageBoxButtons.OK,
@@ -211,9 +254,19 @@ namespace Pulsar.Server.Messages
         {
             lock (_syncLock)
             {
+                if (_disposed)
+                    return;
+
                 try
                 {
-                    _client.Send(new GetMicrophone { DeviceIndex = device, Destroy = true });
+                    int stopDevice = _deviceIndex >= 0 ? _deviceIndex : device;
+                    string stopSession = _sessionId;
+                    _client.Send(new GetMicrophone
+                    {
+                        DeviceIndex = stopDevice,
+                        Destroy = true,
+                        SessionId = stopSession
+                    });
                 }
                 catch (Exception ex)
                 {
@@ -222,6 +275,11 @@ namespace Pulsar.Server.Messages
                 finally
                 {
                     IsStarted = false;
+                    DisposePlaybackLocked();
+                    _sessionId = null;
+                    _deviceIndex = -1;
+                    Interlocked.Exchange(ref _lastSequence, 0);
+                    OnStreamStatusChanged(MediaStreamStatus.Stopped, null, null);
                 }
             }
         }
@@ -231,6 +289,11 @@ namespace Pulsar.Server.Messages
         /// </summary>
         public void RefreshMicrophones()
         {
+            lock (_syncLock)
+            {
+                if (_disposed)
+                    return;
+            }
             _client.Send(new GetMicrophoneDevice());
         }
 
@@ -240,25 +303,83 @@ namespace Pulsar.Server.Messages
             {
                 try
                 {
-                    if (!IsStarted)
+                    if (_disposed || !IsStarted)
                         return;
+
+                    if (!string.IsNullOrWhiteSpace(_sessionId) &&
+                        !string.Equals(_sessionId, message.SessionId, StringComparison.Ordinal))
+                    {
+                        Debug.WriteLine("Ignoring stale microphone session response.");
+                        return;
+                    }
+
+                    if (_deviceIndex >= 0 && message.Device >= 0 && message.Device != _deviceIndex)
+                    {
+                        Debug.WriteLine("Ignoring microphone response from a stale device.");
+                        return;
+                    }
+
+                    if (message.Status == MediaStreamStatus.Stopped)
+                    {
+                        IsStarted = false;
+                        DisposePlaybackLocked();
+                        _sessionId = null;
+                        _deviceIndex = -1;
+                        Interlocked.Exchange(ref _lastSequence, 0);
+                        OnStreamStatusChanged(MediaStreamStatus.Stopped, null, null);
+                        return;
+                    }
+
+                    if (message.Status != MediaStreamStatus.Active)
+                    {
+                        Debug.WriteLine($"Microphone stream error: {message.ErrorCode}: {message.ErrorMessage}");
+                        IsStarted = false;
+                        DisposePlaybackLocked();
+                        _sessionId = null;
+                        _deviceIndex = -1;
+                        Interlocked.Exchange(ref _lastSequence, 0);
+                        OnStreamStatusChanged(message.Status, message.ErrorCode, message.ErrorMessage);
+                        return;
+                    }
+
+                    if (message.Sequence > 0 &&
+                        Interlocked.Read(ref _lastSequence) >= message.Sequence)
+                    {
+                        return;
+                    }
+                    if (message.Sequence > 0)
+                    {
+                        Interlocked.Exchange(ref _lastSequence, message.Sequence);
+                    }
+
+                    OnStreamStatusChanged(MediaStreamStatus.Active, null, null);
 
                     if (message?.Audio == null || message.Audio.Length == 0)
                     {
                         return;
                     }
 
+                    int responseChannels = Math.Max(1, Math.Min(2, message.Channels));
+                    if (_channels != responseChannels)
+                        EnsurePlaybackLocked(responseChannels);
+
                     if (_provider == null)
                     {
                         return;
                     }
 
+                    if (_provider.BufferedBytes > _provider.BufferLength / 2)
+                        _provider.ClearBuffer();
+
+                    if ((message.Audio.Length & 1) != 0)
+                        return;
+
                     OnAudioDataReceived(message.Audio);
 
                     _provider.AddSamples(message.Audio, 0, message.Audio.Length);
+                    if (_audioStream.PlaybackState != PlaybackState.Playing)
+                        _audioStream.Play();
                     message.Audio = null;
-
-                    client.Send(new GetMicrophone { DeviceIndex = message.Device, Bitrate = _bitrate });
                 }
                 catch (ObjectDisposedException ex)
                 {
@@ -282,6 +403,48 @@ namespace Pulsar.Server.Messages
             OnMicrophoneChanged(message.DeviceInfos);
         }
 
+        private void EnsurePlaybackLocked(int channels)
+        {
+            channels = Math.Max(1, Math.Min(2, channels));
+            if (_provider != null &&
+                _provider.WaveFormat.SampleRate == _bitrate &&
+                _provider.WaveFormat.Channels == channels)
+            {
+                _channels = channels;
+                return;
+            }
+
+            DisposePlaybackLocked();
+            _channels = channels;
+            _provider = new BufferedWaveProvider(new WaveFormat(_bitrate, _channels))
+            {
+                BufferDuration = TimeSpan.FromMilliseconds(500),
+                DiscardOnBufferOverflow = true
+            };
+            _audioStream = new WaveOut();
+            _audioStream.Init(_provider);
+        }
+
+        private void DisposePlaybackLocked()
+        {
+            if (_provider != null)
+            {
+                try { _provider.ClearBuffer(); }
+                catch (Exception ex) { Debug.WriteLine($"Error clearing microphone buffer: {ex.Message}"); }
+            }
+
+            if (_audioStream != null)
+            {
+                try { _audioStream.Stop(); }
+                catch (Exception ex) { Debug.WriteLine($"Error stopping microphone stream: {ex.Message}"); }
+                try { _audioStream.Dispose(); }
+                catch (Exception ex) { Debug.WriteLine($"Error disposing microphone stream: {ex.Message}"); }
+            }
+
+            _audioStream = null;
+            _provider = null;
+        }
+
         /// <summary>
         /// Disposes all managed and unmanaged resources associated with this message processor.
         /// </summary>
@@ -297,40 +460,28 @@ namespace Pulsar.Server.Messages
             {
                 lock (_syncLock)
                 {
+                    if (_disposed)
+                        return;
+                    _disposed = true;
                     try
                     {
-                        if (_audioStream != null)
+                        if (IsStarted && _sessionId != null)
                         {
                             try
                             {
-                                _audioStream.Stop();
+                                _client.Send(new GetMicrophone
+                                {
+                                    DeviceIndex = _deviceIndex,
+                                    Destroy = true,
+                                    SessionId = _sessionId
+                                });
                             }
                             catch (Exception ex)
                             {
-                                Debug.WriteLine($"Error stopping microphone stream: {ex.Message}");
+                                Debug.WriteLine($"Error sending microphone stop during dispose: {ex.Message}");
                             }
-
-                            try
-                            {
-                                _provider?.ClearBuffer();
-                            }
-                            catch (Exception ex)
-                            {
-                                Debug.WriteLine($"Error clearing microphone buffer: {ex.Message}");
-                            }
-
-                            try
-                            {
-                                _audioStream.Dispose();
-                            }
-                            catch (Exception ex)
-                            {
-                                Debug.WriteLine($"Error disposing microphone stream: {ex.Message}");
-                            }
-
-                            _audioStream = null;
-                            _provider = null;
                         }
+                        DisposePlaybackLocked();
                     }
                     catch (Exception ex)
                     {
@@ -339,6 +490,9 @@ namespace Pulsar.Server.Messages
                     finally
                     {
                         IsStarted = false;
+                        _sessionId = null;
+                        _deviceIndex = -1;
+                        Interlocked.Exchange(ref _lastSequence, 0);
                     }
                 }
             }

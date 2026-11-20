@@ -1,6 +1,7 @@
 ﻿using MessagePack;
 using Pulsar.Common.Messages.Other;
 using Pulsar.Common.Video;
+using Pulsar.Common.Enums;
 
 namespace Pulsar.Common.Messages.Webcam
 {
@@ -27,5 +28,20 @@ namespace Pulsar.Common.Messages.Webcam
 
         [Key(7)]
         public float FrameRate { get; set; }
+
+        [Key(8)]
+        public string SessionId { get; set; }
+
+        [Key(9)]
+        public long Sequence { get; set; }
+
+        [Key(10)]
+        public MediaStreamStatus Status { get; set; } = MediaStreamStatus.Active;
+
+        [Key(11)]
+        public string ErrorCode { get; set; }
+
+        [Key(12)]
+        public string ErrorMessage { get; set; }
     }
 }

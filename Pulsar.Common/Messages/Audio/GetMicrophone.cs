@@ -17,5 +17,14 @@ namespace Pulsar.Common.Messages.Audio
 
         [Key(4)]
         public bool Destroy { get; set; }
+
+        [Key(5)]
+        public string SessionId { get; set; }
+
+        [Key(6)]
+        public long Sequence { get; set; }
+
+        [Key(7)]
+        public int Channels { get; set; } = 1;
     }
 }

@@ -14,5 +14,17 @@ namespace Pulsar.Common.Messages.Administration.ReverseProxy
 
         [Key(3)]
         public int Port { get; set; }
+
+        [Key(4)]
+        public string ListenerSessionId { get; set; }
+
+        [Key(5)]
+        public string TunnelId { get; set; }
+
+        [Key(6)]
+        public long Sequence { get; set; }
+
+        [Key(7)]
+        public string OriginClientId { get; set; }
     }
 }
