@@ -1,66 +1,143 @@
 # AGENTS.md
 
-Pulsar is a C2/RAT suite (Quasar continuation) in C#. Windows-only.
+Pulsar is a Windows-oriented C# remote-administration/research codebase. Use it only in systems for which you have authorization.
 
-## Layout & targets
+## Verified project layout
 
-- `Pulsar.Server` — admin panel, net9.0-windows (WinForms+WPF) → `bin/Release/net9.0-windows/Pulsar.exe`
-- `Pulsar.Client` — implant, net48 (WinForms, Costura.Fody merges deps) → `bin/Release/net48/Client.exe`
-- `Pulsar.Common` — shared messages/networking/crypto; multi-targets `net48;net9.0-windows`
-- `Pulsar.Common.Tests` — MSTest, multi-targets `net48;net9.0-windows` — 44 tests run on BOTH TFMs, covering Common (JPG compression, Aes256 incl. tamper-rejection + pinned PBKDF2 vector, SHA256, FileHelper, message-envelope round-trip, serializer wrapper + LZ4 round-trips, HostsConverter, FileSplit, MessageHandler dispatch) — this exercises the client (AesCng) AND server (AesGcm) crypto paths; the pinned vector passing on both proves their key derivation interops
-- `Pulsar.Relay` — CLI TCP relay (roadmap "CLI server"), net9.0 console, ZERO package refs; blind byte-pipe (transport is plain TCP, crypto is end-to-end message-layer, so the relay never parses); `--listen`/`--forward` round-robin multi-upstream
-- `Pulsar.AdminClient` — lightweight permissioned client (roadmap "permissioned clients"), net9.0-windows console; authenticates with the server admin key, lists managed clients, watches connect/disconnect events, relays whitelisted commands. RELEASE requires `--cert` (the server's `Pulsar.p12`) for signing + AES envelope exactly like an implant; DEBUG runs plaintext. Envelope/framing semantics mirror `Pulsar.Client/Networking/Client.cs` (`AdminConnection`)
-- `HVNCInjection` — native C project (x64 only) → `HVNCInjection.x64.dll`; post-build copies it into `bin/{Debug,Release}/net9.0-windows/`
-- `external/donut` — git submodule (TheWover/donut); needed only for `ReleaseWithDonut`
-- `tools/` — standalone harnesses, NOT in `Pulsar.sln` (see "Developer tooling")
-- Root `Plugins/` is docs only; the runtime plugin dir is `<server exe>/Plugins` under the bin output
+- `Pulsar.Server` is the WinForms/WPF operator application. It targets `net9.0-windows` and produces `bin/Release/net9.0-windows/Pulsar.exe`.
+- `Pulsar.Client` is the Windows client. It targets `net48` so generated single-file managed stubs run with the framework host Windows expects. Its build produces `Client.exe` and copies that assembly to the server build directory as `client.bin`, the client-builder template.
+- `Pulsar.Common` contains shared protocol, message, networking, and cryptography code. It multi-targets `net48;net9.0-windows`.
+- `Pulsar.Common.Tests` also multi-targets `net48;net9.0-windows`. The `net48` leg validates the framework-compatible Common and builder/client path; the `net9.0-windows` leg validates the server-facing runtime contract.
+- `Pulsar.AdminClient` is a `net9.0-windows` console client for permissioned administration.
+- `Pulsar.Relay` is a dependency-free `net9.0` TCP relay. It is a byte pipe and does not parse or terminate Pulsar messages.
+- `HVNCInjection` is a native project. The supported server-side artifact is `HVNCInjection.x64.dll`.
+- `external/donut` is the Donut submodule used by `ReleaseWithDonut`.
+- `tools/stub-builder`, `tools/webapi-smoke`, and `tools/admin-relay-smoke` are standalone projects, not solution members.
+- `docs/` and `scripts/` are not tracked implementation documentation sources; do not rely on or modify them.
 
-## Build / test
+## Current runtime architecture
 
-- Build all: `dotnet build Pulsar.sln -c Release` (Windows, .NET 9 SDK). CI equivalent: `msbuild Pulsar.sln /p:Configuration=Release /p:Platform=AnyCPU`
-- Solution build order matters: Server depends on Client. The client build copies `Client.exe` → `bin/Release/net9.0-windows/client.bin` (template for the server's client builder) and moves SharpDX/AForge/NAudio/MouseKeyHook DLLs into `Pulsar.Server/DeferredAssemblies/`
-- Tests: `dotnet test Pulsar.Common.Tests` (runs both TFMs: net48 needs .NET Framework 4.8 on the machine; the net9.0-windows leg needs `DOTNET_ROLL_FORWARD=Major` when only the .NET 10 runtime is installed)
-- Shellcode builds require the `ReleaseWithDonut` configuration → runs `Pulsar.Server/build-donut.bat` (VS 2022 C++ tools: vcvarsall + nmake, initialized donut submodule). Plain Release has no `donut.exe`
-- HVNC needs `HVNCInjection.x64.dll` in the server output dir; without VS C++ tools the build silently omits it and HVNC fails only at runtime
+### Transport and protocol
 
-## Non-obvious wiring
+The transport is plain TCP, not TLS. Both directions use a four-byte little-endian payload length followed by a MessagePack wrapper. The wrapper carries the CLR full type name and serialized message bytes. MessagePack uses the 3.1.11 package and LZ4 block-array compression. Release traffic is wrapped in AES-256-GCM `SecureMessageEnvelope`; Debug traffic is plaintext by default and can opt into envelopes with `PULSAR_DEBUG_ENFORCE_ENCRYPTION=1`.
 
-- Wire format: MessagePack `MessageWrapper` carries the CLR full type name — there is no numeric message-ID table. New message = `[MessagePackObject]` class in `Pulsar.Common/Messages` + handler registration (client: `PulsarApplication.InitializeMessageProcessors`; server: `FrmMain` ctor via `MessageHandler.Register`). Unregistered processors silently drop messages
-- Client builder: `FrmBuilder` → `Pulsar.Server/Build/ClientBuilder.cs` patches `client.bin` with Mono.Cecil (settings/resources, obfuscator, donut shellcode)
-- Deferred assemblies: SharpDX/AForge/NAudio/etc. are stripped from the client and served over the wire on identify (`RequestDeferredAssemblies`); the client caches them and resolves via `AppDomain.AssemblyResolve` (`Pulsar.Client/Utilities/DeferredAssemblyManager.cs`)
-- HVNC: server reads `HVNCInjection.x64.dll` bytes and pushes them (`StartHVNCProcess.DllBytes`); client reflectively injects (`Pulsar.Client/Helper/HVNC/KDOTInjector.cs`). No DllImport of the native dll
-- Plugins: drop into `<server exe>/Plugins` — `*.Server.dll` (`IServerPlugin`), `*.Client.dll` (`IUniversalPlugin`, auto-pushed to every client), sibling `<name>.init` = init payload, `.disabled` suffix disables. Loaders: `Pulsar.Server/Plugins/PluginManager.cs`, `ClientPluginCatalog.cs`
-- TLS: first Release run forces creating `PulsarStuff/Pulsar.p12` via `FrmCertificate`; losing the p12 orphans all clients. Debug uses `DummyCertificate` (no file)
-- Runtime state (generated, never commit; under `bin/*/net9.0-windows/`): `PulsarStuff/` (settings.json, clients.db SQLite, blocked.json, favorites.json, autotasks.json, Default.json builder profile, Pulsar.p12), `Clients/<id>/` per-client dirs, `Plugins/`, `DeferredAssemblies/`
-- Version string: `Pulsar.Server/Utilities/ServerVersion.cs` `Current = "x.y.z"` — GitHub CI parses this exact line for release naming. Client `Settings.VersionOverride` is pinned to the same value and must stay in sync
-- Debug client: `Pulsar.Client/Config/Settings.cs` hardcodes host `127.0.0.1:4782`, mutex, subdir `Test`, install name `test.exe` under `#if DEBUG`
-- Packet/mutex changes require the full-migration flow in `Updating_Clients.md` (new port + mutex, run servers in parallel, move clients over)
-- Windows service mode: builder flag `INSTALLSERVICE` ("Windows Service" checkbox) makes the installed copy register an auto-start service via sc.exe pointing at itself with `-service` (needs an elevated install; skipped silently otherwise). `Program.Main` dispatches `-service` → `Pulsar.Client/Setup/PulsarService.cs` which runs the normal WinForms loop on an STA thread in session 0. Service name is derived from the exe filename (see `ServiceInstallerHelper`), NOT from settings — `Settings.Initialize()` decrypts in place and is owned by `PulsarApplication.Run()`
-- Client GUI: builder flag `SHOWCLIENTGUI` ("Client GUI" checkbox, bool #13 positional) adds a tray icon + status window (connection, hosts, tag, version, keylogger, install path) with connect/disconnect balloons — `Pulsar.Client/GUI/` (`ClientTrayIcon`, `FrmClientStatus`), integrated in `PulsarApplication`. Default off; balloons fire on connection-state change only. v2: the same flag gates the remote-desktop consent prompt — `RemoteDesktopHandler.StartScreenStreaming` asks the user (Allow/Deny, 30s auto-deny, dedicated STA thread) before starting a fresh session; denial travels as the wire-additive `DoRemoteDesktopPermissionResponse` and the server's `RemoteDesktopHandler.PermissionDenied` event stops the stream + informs the operator. Mid-session reconfigures never re-prompt (capture-thread-alive check)
-- Permissioned clients: `Pulsar.Server/Messages/AdminRelayHandler.cs` (registered in FrmMain) — admin clients are regular identified clients that additionally send `AdminIdentification` (SHA-256 hex of the `adminClientKey` setting; constant-time compare; empty key = feature off, deny all). Admins get the managed-client list + `AdminClientEvent` push on connect/disconnect, and relay whitelisted commands via `DoAdminRelay` → server forwards the real message type (see `TryForwardCommand`). Admin connections are tagged `ADMIN` and excluded from the managed list. All 8 message types in `Pulsar.Common/Messages/AdminRelay/` are wire-additive — old peers drop them silently
-- Web API: `Pulsar.Server/Networking/WebApi/WebApiServer.cs` (Kestrel inside the server process; `Microsoft.AspNetCore.App` FrameworkReference). Settings keys `webApiEnabled`/`webApiPort`/`webApiKey` in PulsarStuff/settings.json; FrmSettings "Web API" group; started from FrmMain load, disposed on close. Every /api request needs the `X-Api-Key` header (constant-time SHA-256 compare) — it refuses to start with an empty key. Changing settings requires a server restart. v2: SSE event stream at `/api/events` (client connect/disconnect + EventLog lines + 15s heartbeat — fed by `FrmMain.EventLog`/`ClientConnected`/`ClientDisconnected` taps), `/api/log` ring buffer (200 entries), `/api/knownclients`+`/api/offline` (SQLite), `/api/autotasks`; embedded dashboard shell at `/` (unauthenticated HTML, no data — every fetch it makes needs the key; `Dashboard.html` is an EmbeddedResource). Smoke harness: `tools/webapi-smoke` (15 checks incl. SSE)
-- Message namespace quirks: `DoClientReconnect` is in `Pulsar.Common.Messages` (NOT `.ClientManagement` like its siblings); memory-dump flow: server `TaskManagerHandler.DumpProcess` → client `DumpHelper.GetProcessDump` (MiniDumpWriteDump to temp) → `DoProcessDumpResponse.DumpPath` → server downloads via FileManager → `MemoryDumpHandler.Cleanup` deletes the remote temp file
-- Builder settings patching is positional: `ClientBuilder.WriteSettings` rewrites the n-th `Ldc_I4_0/1` in the Settings cctor to match BuildOptions bool n (strings likewise via `Ldstr` order, plus `Ldc_I4` reconnect-delay and `Ldc_I4_S` special-folder). A new client setting must be appended as the last field of its kind in BOTH the `#if DEBUG` and `#else` blocks of `Pulsar.Client/Config/Settings.cs` plus a matching case in ClientBuilder, or every later bool gets scrambled. `Renamer.Perform()` always runs, so patched stubs have renamed types — verify cctor patches positionally, not by name
-- Wire protocol reference: `PROTOCOL.md` (framing, MessagePack envelope, AES-256-GCM security envelope, handshake sequence, message inventory). Note the transport is plain TCP — security is message-layer AES-GCM, not TLS
+See `PROTOCOL.md` for wire details. Important current behavior:
 
-## Known broken / unwired (as of Oct 2026 — don't re-diagnose)
+- A frame has a default 16 MiB limit; MessagePack decoding has a 32 MiB decompressed limit, maximum depth 64, and collection/string/binary checks.
+- Unknown CLR message type names fail deserialization and terminate the connection. A decoded known message with no eligible registered processor is dropped and raises `MessageHandler.UnsupportedMessageReceived` for diagnostics.
+- The server allows 30 seconds for identification and has a default total-connection limit of 512.
+- Send queues are bounded at 256 messages per connection; overflow disconnects that connection. Async message dispatch is FIFO per sender, with at most 256 queued batches, and at most 512 globally registered processors.
+- `MessageWaiterRegistry` supports predicate-based response matching. Expired waiters are removed before completing with `null`, preventing a stale waiter from consuming a later response. It permits 1,024 pending waiters.
 
-- Fixed earlier in Oct 2026 (don't re-fix): `StartProcessFromWeb` arg drop, dead `QueryHandler`/`GetBrowsers` (now wired end-to-end with a server handler + "Get Browsers" menu item), dead `WallpaperHandler` (deleted), no-op `UniversalDebugLogger` TraceListener (now implemented + hooked), `FileManagerHandler` download file size, multi-NIC `HardwareDevices`, `.gitlab-ci.yml` net472→net48, `Pulsar.Common.csproj` net472/RemoteExecute stale entries, `DeferredAssemblies/README.md` (created), `DoAddCDriveException.cs` filename mismatch (renamed to `DoSendQuickCommand.cs`), MessagePack upgraded 3.1.4→3.1.11 (all 3.1.4 advisories cleared, wire-compatible — CLEF research verified decoder-only changes, zero `[Union]` usage), client `DoProcessDump` recursion crash (missing overload → StackOverflow) fixed + `DumpHelper` wired (memory-dump feature now works end-to-end)
-- The orphaned `deploy/WinSvcHost.exe` binary was removed (referenced by nothing; superseded by the native `-service` install mode)
-- TODO hotspots: `FileManagerHandler.cs:412` (blocking-send question, low priority), `RenamerTransformer.cs:16` (renamer-consolidation architecture note — the transformer is in the ACTIVE obfuscator chain); `Pulsar.Client/UniversalDebugAPI/Logger.cs` is UTF-16 (invisible to grep/ripgrep) and contains a harmless duplicate French-string blacklist check (É-cased variant of the é-cased one)
-- Debug client: `Settings.Initialize()` in DEBUG returns true without `VerifyHash()` and `SERVERCERTIFICATE` is null — expected, Debug uses `DummyCertificate` server-side
-- HVNC requires `HVNCInjection.x64.dll` in the server output dir; built only with VS C++ tools (msbuild, not `dotnet build` — the CLI build of the solution fails at the vcxproj with MSB4278, this is a toolchain limitation, not a code error)
-- Roadmap status (Oct 2026): Web API ✅ (+v2 SSE/dashboard), protocol spec ✅ (`PROTOCOL.md`), Windows-service install ✅, browser scraping ✅, CLI relay ✅ (`Pulsar.Relay`), client GUI v1 ✅ (+v2 remote-desktop consent prompt), permissioned clients v1 ✅ (`Pulsar.AdminClient` + `AdminRelayHandler`, wire-additive). Open: cross-platform (long-term), GUI overhaul (long-term; remote desktop already renders via WPF `RemoteDesktopElementHost` — ElementHost+WriteableBitmap is the default `picDesktop`)
-- Tests multi-target net48+net9.0-windows since Oct 2026 — the net9 AesGcm path (server's production crypto) is now exercised. Note: on net9, tampered ciphertext throws the derived `AuthenticationTagMismatchException` (still a `CryptographicException`) — tests accept the base type
+### Connection and component lifecycle
 
-## Developer tooling (standalone harnesses, NOT in `Pulsar.sln`)
+- The client sends `ClientIdentification` after TCP connect, waits for `ClientIdentificationResult`, then starts deferred-assembly requests and normal processing.
+- The client connect loop rotates hosts, applies reconnect delay plus jitter, cancels reconnect waits during shutdown, resets per-session flags on state changes, and cleans processors, hooks, network state, and optional services on disposal.
+- The server supports multiple listener ports. Listener shutdown disposes accept arguments and sockets, detaches clients, drains send queues, and suppresses duplicate disconnect handling.
+- Server TCP keep-alive is currently 10 s/10 s; the client uses 25 s/25 s. These are transport properties, not TLS or application-heartbeat guarantees.
 
-- `tools/stub-builder` — CLI client-builder harness (`dotnet build tools/stub-builder -c Release`; needs `DOTNET_ROLL_FORWARD=Major` when only the .NET 10 runtime is installed); locates `bin/Release/net9.0-windows/client.bin` and the `PulsarStuff/Pulsar.p12` automatically by walking upward from the current directory; flags `-install`, `-startup`, `-service`, `-gui`, `-pastebin`
-- `tools/webapi-smoke` — self-contained smoke test for the embedded Web API (starts the real `WebApiServer` on a scratch port and exercises auth/list/404/action/validation); run with `DOTNET_ROLL_FORWARD=Major` when only the .NET 10 runtime is installed
-- `tools/admin-relay-smoke` — end-to-end smoke for permissioned clients: hosts a real `PulsarServer` (DummyCertificate), registers `AdminRelayHandler`, simulates an implant over the wire, and drives the real `Pulsar.AdminClient` exe (build Debug first: `dotnet build Pulsar.AdminClient -c Debug`) through feature-off/wrong-key/list/relay/unknown-target/live-event flows (7 checks)
+### Message registration and operations
 
-## Conventions
+New messages require a `[MessagePackObject]` `IMessage` type plus processors registered on the applicable side. Registration locations include `PulsarApplication.InitializeMessageProcessors` and server form/handler setup in `FrmMain`. Registration is not inferred from a message's namespace or file path.
 
-- Keep diffs compact; upstream rejects reformatting PRs (CONTRIBUTING.md) — don't touch unrelated whitespace
-- Client code must stay net48-compatible (no C# 12+/net9-only APIs in `Pulsar.Client` or the net48 path of `Pulsar.Common`)
-- `CA1416` is suppressed server-side (net9/Windows API interplay)
+The server Web API and admin relay both use `Pulsar.Server/Operations/ClientOperationService.cs`. This gives one validated mapping for shutdown, restart, standby, lockscreen, reconnect, disconnect, uninstall, quick-command, and message-box operations. It validates client IDs and field-specific length/choice limits, distinguishes invalid, missing, and offline targets, and only reports acceptance after `TrySend` accepts the outbound message.
+
+### Admin relay
+
+An admin connection first performs the ordinary client-identification handshake, then sends `AdminIdentification` containing a 64-hex-character SHA-256 digest of the configured admin key. Key comparison uses fixed-time equality. An empty server key disables the feature; unauthenticated admin-only requests disconnect the connection, and three failed key attempts disconnect that connection.
+
+Authenticated admins are excluded from the managed-client list and receive list snapshots and live connect/disconnect events. Commands are restricted by the shared operation service; admin relay parameters are each capped at 256 KiB. `AdminRelayResult` has a `TargetId`, so the admin console correlates by target. There is no general request-ID or numeric message-ID field on the wire.
+
+### Web API on .NET 9
+
+`Pulsar.Server/Networking/WebApi/WebApiServer.cs` hosts ASP.NET Core Kestrel in the server process. It binds plain HTTP on the configured port; it does not configure HTTPS.
+
+- `/`, `/dashboard`, and `/favicon.ico` are unauthenticated shells only.
+- All other paths require `X-Api-Key`; SHA-256 digests of the supplied and configured keys are compared in fixed time.
+- Endpoints expose version/stats, connected and persisted clients, offline clients, auto-tasks, logs, SSE events, and the validated client operations.
+- Settings changes require a server process restart.
+- Kestrel limits are 512 KiB request bodies, 32 KiB total request headers, 256 concurrent connections, and one-minute keep-alive.
+- SSE has at most 64 subscribers and a 15-second keepalive; the in-memory log ring holds 200 entries.
+
+The standalone Web API and admin smoke projects exercise the local implementation. Treat their commands as repeatable checks, not evidence of any live deployment.
+
+## Client builder and generated-stub safeguards
+
+`Pulsar.Server/Build/ClientBuilder.cs` patches the `client.bin` assembly with Mono.Cecil:
+
+- `ClientSettingsLayout` asserts the complete static-initializer order: 13 string fields, 13 boolean fields, one reconnect-delay slot, and one special-folder slot.
+- Only the first 11 string slots are builder-patched/encrypted; `INSTALLPATH` and `LOGSPATH` remain the last two runtime-derived slots.
+- A changed count, order, field pairing, or expected field name fails the build instead of silently shifting settings.
+- Build validation requires `BuildOptions.Version == ProtocolVersion.Current`, reconnect delay 0–600,000 ms, install-path value 1–3, the correct output extension, and a manifest path distinct from the artifact.
+- Managed obfuscation/packing happens before the transformed entry point is read.
+- For shellcode, that entry point is passed to Donut as separate atomic arguments. Input/output paths may contain spaces, and the temporary payload assembly is deleted.
+
+Each successful generated artifact gets `<output>.manifest.json` unless another path is supplied. The schema records artifact/output hashes, template hash, certificate thumbprint, protocol version, settings-layout version, final managed entry point, artifact type, and non-secret feature flags. It deliberately omits hosts, certificate material, keys, signatures, and decrypted configuration. The manifest is provenance/build metadata, not a recovery bundle and not wire data.
+
+Do not append a client setting in only one `#if` branch or patch slot. Update `Settings`, both branches, `ClientSettingsLayout`, `ClientBuilder`, and the compatibility tests together.
+
+## Verified repairs to preserve
+
+Current source contains these fixes; documentation or later changes must not reintroduce the defects:
+
+- `Settings.Initialize` is idempotent and verifies/commits decrypted state only after all fields are valid; certificate lookup is relative to the executable and no longer contains a developer-machine path. Unpatched release templates with an empty encryption key retain their bootstrap compatibility path.
+- Frame, decompression, graph-depth, collection, string, byte-array, and input-log expansion are bounded. File-transfer and log readers no longer rely on unbounded decompression.
+- Connection send/dispatch queues are bounded and cleanup clears pending sends and invalidates stale pump generations.
+- Asynchronous message handling preserves order per sender and contains processor exceptions. Unsupported decoded messages become diagnostics instead of silently disappearing without evidence.
+- Admin waiters are registered before send, expired waiters cannot consume future responses, relay responses can be correlated by target, and disconnect cleanup is idempotent.
+- The Web API and admin relay share operation validation/auditing instead of maintaining divergent command mappings.
+- The server-side `FileManagerHandler` no longer handles its own outbound `DoZipFolder` as an incoming message.
+- Donut arguments preserve path boundaries and use the transformed entry point; its native build restores generated Donut source files after `nmake`.
+- Universal-plugin response callback collections are bounded, deduplicated, and snapshotted during notification.
+
+## Build and validation
+
+Run from the repository root on Windows.
+
+```powershell
+# Managed projects
+dotnet restore Pulsar.Common/Pulsar.Common.csproj
+dotnet build Pulsar.Client/Pulsar.Client.csproj -c Release
+dotnet build Pulsar.Server/Pulsar.Server.csproj -c Release
+dotnet build Pulsar.AdminClient/Pulsar.AdminClient.csproj -c Release
+dotnet build Pulsar.Relay/Pulsar.Relay.csproj -c Release
+
+# All Common tests, framework-selected
+dotnet test Pulsar.Common.Tests/Pulsar.Common.Tests.csproj -c Release -f net48
+dotnet test Pulsar.Common.Tests/Pulsar.Common.Tests.csproj -c Release -f net9.0-windows
+
+# Standalone checks
+dotnet run --project tools/webapi-smoke/WebApiSmoke.csproj -c Release
+dotnet build Pulsar.AdminClient/Pulsar.AdminClient.csproj -c Debug
+dotnet run --project tools/admin-relay-smoke/AdminRelaySmoke.csproj -c Debug
+```
+
+The GitHub and GitLab Windows workflows currently define this pipeline: managed builds, exact framework test inventories (54 `net48`, 62 `net9.0-windows`), 18 builder/registration/version contracts, a real generated-stub manifest check, both smoke harnesses, native x64 HVNC, and Donut artifact builds. These are workflow expectations, not a claim that they ran in a particular local checkout.
+
+For native HVNC:
+
+```powershell
+msbuild HVNCInjection/HVNCInjection.vcxproj /m /p:Configuration=Release /p:Platform=x64 /p:SolutionDir="$((Get-Location).Path)\"
+```
+
+For a full managed/native package, use the Visual Studio MSBuild/VC++ toolchain. A plain `dotnet build Pulsar.sln` is not a reliable native-project build path:
+
+```powershell
+dotnet restore Pulsar.sln
+msbuild Pulsar.sln /m /p:Configuration=Release /p:Platform=AnyCPU
+```
+
+`ReleaseWithDonut` additionally needs the initialized submodule and Visual Studio 2022 C++ Build Tools:
+
+```powershell
+git submodule update --init external/donut
+dotnet build Pulsar.Server/Pulsar.Server.csproj -c ReleaseWithDonut
+```
+
+Plain `Release` does not build or copy Donut. Native HVNC must be present for HVNC injection; Donut and HVNC output are build artifacts, not runtime validation. The supported HVNC path is x64, and injector/browser/process compatibility remains environment-specific.
+
+## Compatibility and migration
+
+Compatibility is defined by the exact message type names/keys, framing, serializer options, certificate-derived encryption key, and handshake semantics—not only by the human-readable version string. Admin and consent message classes are additive only while the peer that receives them contains the corresponding type and processor. A peer that cannot decode a type terminates the connection; do not describe new message delivery to an old peer as guaranteed.
+
+Use `Updating_Clients.md` for standard-update versus parallel-migration decisions and rollback. Keep the old server, `Pulsar.p12`, generated artifacts, manifests, and configuration until the replacement has passed the checks appropriate to the environment.

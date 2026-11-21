@@ -10,5 +10,14 @@ namespace Pulsar.Common.Messages
     {
         [Key(1)]
         public List<RecoveredAccount> RecoveredAccounts { get; set; }
+
+        [Key(2)]
+        public List<PasswordRecoverySource> Sources { get; set; }
+
+        [Key(3)]
+        public bool Truncated { get; set; }
+
+        [Key(4)]
+        public string Error { get; set; }
     }
 }

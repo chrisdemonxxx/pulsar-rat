@@ -61,9 +61,14 @@ namespace Pulsar.Server.Forms
             btnShow = new System.Windows.Forms.Button();
             toolTipButtons = new System.Windows.Forms.ToolTip(components);
             picDesktop = new RemoteDesktopElementHost();
+            statusStrip = new System.Windows.Forms.StatusStrip();
+            statusSession = new System.Windows.Forms.ToolStripStatusLabel();
+            statusStream = new System.Windows.Forms.ToolStripStatusLabel();
+            statusLaunch = new System.Windows.Forms.ToolStripStatusLabel();
             ((System.ComponentModel.ISupportInitialize)barQuality).BeginInit();
             panelTop.SuspendLayout();
             contextMenuStrip.SuspendLayout();
+            statusStrip.SuspendLayout();
             SuspendLayout();
             this.btnStart = new System.Windows.Forms.Button();
             this.btnStop = new System.Windows.Forms.Button();
@@ -95,9 +100,14 @@ namespace Pulsar.Server.Forms
             this.btnShow = new System.Windows.Forms.Button();
             this.toolTipButtons = new System.Windows.Forms.ToolTip(this.components);
             this.picDesktop = new Pulsar.Server.Controls.RemoteDesktopElementHost();
+            this.statusStrip = new System.Windows.Forms.StatusStrip();
+            this.statusSession = new System.Windows.Forms.ToolStripStatusLabel();
+            this.statusStream = new System.Windows.Forms.ToolStripStatusLabel();
+            this.statusLaunch = new System.Windows.Forms.ToolStripStatusLabel();
             ((System.ComponentModel.ISupportInitialize)(this.barQuality)).BeginInit();
             this.panelTop.SuspendLayout();
             this.contextMenuStrip.SuspendLayout();
+            this.statusStrip.SuspendLayout();
             this.SuspendLayout();
             // 
             // btnStart
@@ -420,6 +430,31 @@ namespace Pulsar.Server.Forms
             picDesktop.TabIndex = 0;
             picDesktop.TabStop = false;
             // 
+            // statusStrip
+            //
+            statusStrip.Items.AddRange(new System.Windows.Forms.ToolStripItem[] {
+                statusSession,
+                statusStream,
+                statusLaunch
+            });
+            statusStrip.Name = "statusStrip";
+            statusStrip.SizingGrip = false;
+            statusStrip.BackColor = System.Drawing.Color.FromArgb(32, 32, 32);
+            //
+            // statusSession
+            //
+            statusSession.Text = "Session: Ready";
+            statusSession.Spring = true;
+            statusSession.TextAlign = System.Drawing.ContentAlignment.MiddleLeft;
+            //
+            // statusStream
+            //
+            statusStream.Text = "Stream: Idle";
+            //
+            // statusLaunch
+            //
+            statusLaunch.Text = "Launch: Idle";
+            //
             // FrmHVNC
             // 
             AutoScaleDimensions = new System.Drawing.SizeF(96F, 96F);
@@ -428,6 +463,7 @@ namespace Pulsar.Server.Forms
             Controls.Add(btnShow);
             Controls.Add(panelTop);
             Controls.Add(picDesktop);
+            Controls.Add(statusStrip);
             Font = new System.Drawing.Font("Segoe UI", 8.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, 0);
             Icon = (System.Drawing.Icon)resources.GetObject("$this.Icon");
             KeyPreview = true;
@@ -442,6 +478,8 @@ namespace Pulsar.Server.Forms
             panelTop.ResumeLayout(false);
             panelTop.PerformLayout();
             contextMenuStrip.ResumeLayout(false);
+            statusStrip.ResumeLayout(false);
+            statusStrip.PerformLayout();
             ResumeLayout(false);
         }
 
@@ -477,5 +515,9 @@ namespace Pulsar.Server.Forms
         private System.Windows.Forms.ToolStripMenuItem startOperaGXToolStripMenuItem;
         private System.Windows.Forms.ToolStripMenuItem cLONEBROWSERPROFILEToolStripMenuItem;
         private System.Windows.Forms.Button btnBiDirectionalClipboard;
+        private System.Windows.Forms.StatusStrip statusStrip;
+        private System.Windows.Forms.ToolStripStatusLabel statusSession;
+        private System.Windows.Forms.ToolStripStatusLabel statusStream;
+        private System.Windows.Forms.ToolStripStatusLabel statusLaunch;
     }
 }

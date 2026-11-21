@@ -103,9 +103,10 @@ catch (Exception ex)
 
 // admin identification
 string keyHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(adminKey)));
+var pendingAdminResult = connection.WaitForAsync<AdminIdentificationResult>(TimeSpan.FromSeconds(10));
 connection.Send(new AdminIdentification { AdminKeyHash = keyHash });
 
-var adminResult = await connection.WaitForAsync<AdminIdentificationResult>(TimeSpan.FromSeconds(10));
+var adminResult = await pendingAdminResult;
 if (adminResult == null)
 {
     Console.Error.WriteLine("admin identification timed out (server may not support admin clients)");
@@ -125,8 +126,9 @@ bool didWork = false;
 if (list)
 {
     didWork = true;
+    var pendingListResponse = connection.WaitForAsync<GetAdminClientListResponse>(TimeSpan.FromSeconds(10));
     connection.Send(new GetAdminClientList());
-    var response = await connection.WaitForAsync<GetAdminClientListResponse>(TimeSpan.FromSeconds(10));
+    var response = await pendingListResponse;
     if (response == null)
     {
         Console.Error.WriteLine("client list timed out");
@@ -173,8 +175,11 @@ if (targetId != null || action != null)
         }
     }
 
+    var pendingRelayResult = connection.WaitForAsync<AdminRelayResult>(
+        TimeSpan.FromSeconds(10),
+        result => string.Equals(result.TargetId, targetId, StringComparison.OrdinalIgnoreCase));
     connection.Send(new DoAdminRelay { TargetId = targetId, Command = command, Param1 = param1, Param2 = param2 });
-    var relayResult = await connection.WaitForAsync<AdminRelayResult>(TimeSpan.FromSeconds(10));
+    var relayResult = await pendingRelayResult;
     if (relayResult == null)
     {
         Console.Error.WriteLine("relay result timed out");

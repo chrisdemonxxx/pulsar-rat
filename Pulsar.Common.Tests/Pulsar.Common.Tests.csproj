@@ -21,6 +21,7 @@
 	</PropertyGroup>
 	<ItemGroup>
 		<PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.3.2" />
+		<PackageReference Include="Mono.Cecil" Version="0.11.6" Condition="'$(TargetFramework)' == 'net9.0-windows'" />
 		<PackageReference Include="MSTest.TestAdapter" Version="2.2.10" />
 		<PackageReference Include="MSTest.TestFramework" Version="2.2.10" />
 		<PackageReference Include="System.Drawing.Common" Version="9.0.7" />
@@ -28,5 +29,7 @@
 	</ItemGroup>
 	<ItemGroup>
 		<ProjectReference Include="..\Pulsar.Common\Pulsar.Common.csproj" />
+		<ProjectReference Include="..\Pulsar.Server\Pulsar.Server.csproj" Condition="'$(TargetFramework)' == 'net9.0-windows'" />
+		<ProjectReference Include="..\Pulsar.Client\Pulsar.Client.csproj" Condition="'$(TargetFramework)' == 'net9.0-windows'" />
 	</ItemGroup>
 </Project>

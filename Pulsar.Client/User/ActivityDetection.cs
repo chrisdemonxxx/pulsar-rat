@@ -31,6 +31,7 @@ namespace Pulsar.Client.User
         /// The token to check for cancellation.
         /// </summary>
         private readonly CancellationToken _token;
+        private bool _disposed;
 
         /// <summary>
         /// Initializes a new instance of <see cref="ActivityDetection"/> using the given client.
@@ -56,7 +57,11 @@ namespace Pulsar.Client.User
         /// </summary>
         public void Start()
         {
-            new Thread(UserActivityThread).Start();
+            if (_disposed || _token.IsCancellationRequested)
+                return;
+
+            var thread = new Thread(UserActivityThread) { IsBackground = true };
+            thread.Start();
         }
 
         /// <summary>
@@ -66,6 +71,9 @@ namespace Pulsar.Client.User
         {
             try
             {
+                if (_token.IsCancellationRequested)
+                    return;
+
                 if (IsUserIdle())
                 {
                     if (_lastUserStatus != UserStatus.Idle)
@@ -122,8 +130,9 @@ namespace Pulsar.Client.User
 
         protected virtual void Dispose(bool disposing)
         {
-            if (disposing)
+            if (disposing && !_disposed)
             {
+                _disposed = true;
                 _client.ClientState -= OnClientStateChange;
                 _tokenSource.Cancel();
                 _tokenSource.Dispose();

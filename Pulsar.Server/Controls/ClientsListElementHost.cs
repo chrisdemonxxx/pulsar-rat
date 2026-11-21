@@ -42,6 +42,12 @@ namespace Pulsar.Server.Controls
 
         public void ClearClients() => _clientsListView.Clear();
 
+        public void ShowLoading() => _clientsListView.ShowLoading();
+
+        public void ShowError(string message) => _clientsListView.ShowError(message);
+
+        public void ShowEmpty(string message) => _clientsListView.ShowEmpty(message);
+
         public void ApplyFilter(Func<ClientListEntry, bool>? predicate)
         {
             _clientsListView.ApplyFilter(predicate == null ? null : new Predicate<ClientListEntry>(predicate));

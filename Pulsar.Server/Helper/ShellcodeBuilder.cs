@@ -2,8 +2,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Collections.Generic;
-using System.Windows.Forms;
-using Pulsar.Server.Forms;
+using System.Threading.Tasks;
 
 namespace Pulsar.Server.Helper
 {
@@ -67,57 +66,66 @@ namespace Pulsar.Server.Helper
             EntropyLevel entropy = EntropyLevel.RandomSymmetric,
             Architecture arch = Architecture.Both,
             Format format = Format.Binary,
-            Headers headers = Headers.Overwrite
+            Headers headers = Headers.Overwrite,
+            Compress compression = Compress.None,
+            Bypass bypass = Bypass.None
         )
         {
             if (string.IsNullOrEmpty(donutExePath))
                 donutExePath = Path.Combine(Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location), "donut.exe");
+
+            donutExePath = Path.GetFullPath(donutExePath);
+            binaryPath = Path.GetFullPath(binaryPath);
+            outputBinPath = Path.GetFullPath(outputBinPath);
 
             if (!File.Exists(donutExePath))
                 throw new FileNotFoundException("donut.exe not found", donutExePath);
 
             if (!File.Exists(binaryPath))
                 throw new FileNotFoundException("Input Binary not found", binaryPath);
+            if (string.Equals(binaryPath, outputBinPath, StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException("Donut input and output paths must differ.", nameof(outputBinPath));
 
-            Compress compression = GetCompressionFromForm();
-            Bypass bypass = GetBypassFromForm();
+            Directory.CreateDirectory(Path.GetDirectoryName(outputBinPath));
+            if (File.Exists(outputBinPath))
+                File.Delete(outputBinPath);
 
-            List<string> args = new List<string>
-            {
-                $"-e {(int)entropy}",
-                $"-a {(int)arch}",
-                $"-i {binaryPath}",
-                $"-c {entryClass}",
-                $"-m {entryMethod}",
-                $"-o {outputBinPath}",
-                $"-f {(int)format}",
-                $"-z {(int)compression}",
-                $"-b {(int)bypass}",
-                $"-k {(int)headers}",
-            };
+            var args = BuildArguments(
+                binaryPath,
+                entryClass,
+                entryMethod,
+                outputBinPath,
+                clrVersion,
+                entropy,
+                arch,
+                format,
+                compression,
+                bypass,
+                headers);
 
-            if (!string.IsNullOrEmpty(clrVersion))
-                args.Add($"-r {clrVersion}");
-
-            ProcessStartInfo psi = new ProcessStartInfo
+            var psi = new ProcessStartInfo
             {
                 FileName = donutExePath,
-                Arguments = string.Join(" ", args),
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 WindowStyle = ProcessWindowStyle.Hidden
             };
+            foreach (var argument in args)
+                psi.ArgumentList.Add(argument);
 
-            using (Process proc = Process.Start(psi))
+            using (Process proc = Process.Start(psi) ??
+                                  throw new InvalidOperationException("Unable to start donut.exe."))
             {
+                var stdout = proc.StandardOutput.ReadToEndAsync();
+                var stderr = proc.StandardError.ReadToEndAsync();
                 proc.WaitForExit();
+                Task.WaitAll(stdout, stderr);
                 if (proc.ExitCode != 0)
                 {
-                    string stdout = proc.StandardOutput.ReadToEnd();
-                    string stderr = proc.StandardError.ReadToEnd();
-                    throw new InvalidOperationException($"Donut failed (exit {proc.ExitCode})\nSTDOUT: {stdout}\nSTDERR: {stderr}");
+                    throw new InvalidOperationException(
+                        $"Donut failed (exit {proc.ExitCode})\nSTDOUT: {stdout.Result}\nSTDERR: {stderr.Result}");
                 }
             }
 
@@ -135,31 +143,48 @@ namespace Pulsar.Server.Helper
             }
         }
 
-        private static Compress GetCompressionFromForm()
+        public static IReadOnlyList<string> BuildArguments(
+            string binaryPath,
+            string entryClass,
+            string entryMethod,
+            string outputBinPath,
+            string clrVersion,
+            EntropyLevel entropy,
+            Architecture arch,
+            Format format,
+            Compress compression,
+            Bypass bypass,
+            Headers headers)
         {
-            FrmBuilder form = GetBuilderForm();
-            string compressionText = form.comboBox1.Text;
-            return ConvertCompressionTextToEnum(compressionText);
-        }
+            if (string.IsNullOrWhiteSpace(entryClass))
+                throw new ArgumentException("Entry class cannot be empty.", nameof(entryClass));
+            if (string.IsNullOrWhiteSpace(entryMethod))
+                throw new ArgumentException("Entry method cannot be empty.", nameof(entryMethod));
 
-        private static Bypass GetBypassFromForm()
-        {
-            FrmBuilder form = GetBuilderForm();
-            return form.checkBox2.Checked ? Bypass.Continue : Bypass.None;
-        }
-
-        private static FrmBuilder GetBuilderForm()
-        {
-            foreach (Form form in Application.OpenForms)
+            var args = new List<string>
             {
-                if (form is FrmBuilder builderForm)
-                    return builderForm;
+                "-e", ((int)entropy).ToString(),
+                "-a", ((int)arch).ToString(),
+                "-i", binaryPath,
+                "-c", entryClass,
+                "-m", entryMethod,
+                "-o", outputBinPath,
+                "-f", ((int)format).ToString(),
+                "-z", ((int)compression).ToString(),
+                "-b", ((int)bypass).ToString(),
+                "-k", ((int)headers).ToString()
+            };
+
+            if (!string.IsNullOrWhiteSpace(clrVersion))
+            {
+                args.Add("-r");
+                args.Add(clrVersion);
             }
 
-            throw new InvalidOperationException("FrmBuilder form not found or not accessible");
+            return args;
         }
 
-        private static Compress ConvertCompressionTextToEnum(string compressionText)
+        public static Compress ConvertCompressionTextToEnum(string compressionText)
         {
             return compressionText switch
             {

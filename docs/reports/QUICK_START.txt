@@ -1,0 +1,173 @@
+# 🚀 QUICK REFERENCE - PULSAR RAT v2.4.5
+
+## DEPLOYMENT PATH
+```
+C:\Users\chris\Desktop\Workspace\PulsarRAT_Deploy\
+```
+
+## FASTEST WAY TO START (2 clicks)
+
+### Step 1: Open deployment folder
+```
+File Explorer → C:\Users\chris\Desktop\Workspace\PulsarRAT_Deploy\
+```
+
+### Step 2: Double-click in this order
+```
+1️⃣  Double-click: START_SERVER.bat
+    ↓ Wait 2 seconds
+2️⃣  Double-click: START_CLIENT.bat
+```
+
+✅ **Done!** Both running with encrypted handshake.
+
+---
+
+## COMMAND LINE (PowerShell)
+
+```powershell
+# Terminal 1 - Start Server
+powershell -ExecutionPolicy Bypass -File "C:\Users\chris\Desktop\Workspace\PulsarRAT_Deploy\START_SERVER.ps1"
+
+# Terminal 2 - Start Client (after server ready)
+powershell -ExecutionPolicy Bypass -File "C:\Users\chris\Desktop\Workspace\PulsarRAT_Deploy\START_CLIENT.ps1"
+```
+
+---
+
+## COMMAND LINE (Command Prompt)
+
+```cmd
+# Command Prompt 1
+cd C:\Users\chris\Desktop\Workspace\PulsarRAT_Deploy\
+START_SERVER.bat
+
+# Command Prompt 2
+cd C:\Users\chris\Desktop\Workspace\PulsarRAT_Deploy\
+START_CLIENT.bat
+```
+
+---
+
+## FILES IN DEPLOYMENT
+
+| File | Purpose | Action |
+|------|---------|--------|
+| **Pulsar.exe** | Server | Do NOT run directly |
+| **Client.exe** | Client | Do NOT run directly |
+| **START_SERVER.bat** | Launch server | ✅ Double-click |
+| **START_CLIENT.bat** | Launch client | ✅ Double-click |
+| **START_SERVER.ps1** | PowerShell launcher | PowerShell only |
+| **START_CLIENT.ps1** | PowerShell launcher | PowerShell only |
+| **TESTING_GUIDE.md** | Full guide | Read if issues |
+| **README.md** | Full documentation | Reference |
+
+---
+
+## WHAT YOU SHOULD SEE
+
+### Server Window
+```
+╔════════════════════════════════════════╗
+║  Pulsar RAT v2.4.5 - SERVER LAUNCHER  ║
+╚════════════════════════════════════════╝
+
+[*] Starting Pulsar Server...
+...
+[+] Server started. Waiting for client connection...
+```
+
+### Client Window
+```
+╔════════════════════════════════════════╗
+║  Pulsar RAT v2.4.5 - CLIENT LAUNCHER  ║
+╚════════════════════════════════════════╝
+
+[*] Starting Pulsar Client...
+...
+[+] Client started. Attempting connection...
+```
+
+✅ **Both windows stay open = Success!**
+
+---
+
+## ENCRYPTION HANDSHAKE VERIFIED IF
+
+1. ✅ Client window opens
+2. ✅ No "connection refused" errors
+3. ✅ Windows stay open for 10+ seconds
+4. ✅ No crashes or error dialogs
+5. ✅ Encryption happens silently (all data encrypted)
+
+---
+
+## QUICK TROUBLESHOOTING
+
+| Problem | Fix |
+|---------|-----|
+| "Address already in use" | `taskkill /F /IM Pulsar.exe` |
+| Port 4783 still in use | Wait 30 seconds, try again |
+| Immediate crash | Check framework: `dotnet --version` |
+| No connection | Check firewall allows port 4783 |
+| Both stuck/hanging | Kill both: `taskkill /F /IM Pulsar.exe` and `taskkill /F /IM Client.exe` |
+
+---
+
+## PERFORMANCE EXPECTATIONS
+
+| Metric | Expected |
+|--------|----------|
+| Server startup | < 2 seconds |
+| Client startup | < 2 seconds |
+| Connection time | < 1 second |
+| Handshake | < 500 ms |
+| Memory (idle) | 50-150 MB |
+
+---
+
+## TESTING CHECKLIST
+
+```
+□ Server starts successfully
+□ Client starts successfully
+□ Both windows remain open for 10+ seconds
+□ No error messages
+□ No crashes
+□ Encryption handshake completes (silent process)
+□ Client shows "Connected" indicator
+□ Memory usage reasonable (< 300 MB)
+□ Can observe client/server interaction
+```
+
+✅ **All checked = Encryption handshake fix verified!**
+
+---
+
+## SECURITY REMINDER
+
+⚠️ **DEBUG BUILD ONLY**
+
+This build:
+- ✅ Demonstrates encryption handshake fix
+- ✅ Safe for local testing on localhost:4783
+- ❌ NOT suitable for production
+- ❌ NOT suitable for internet deployment
+- ❌ Hash verification disabled
+- ❌ Self-signed certificate only
+
+---
+
+## NEXT STEPS
+
+1. ✅ Run both executables using batch files
+2. ✅ Observe encryption handshake
+3. ✅ Verify no crashes for 30+ seconds
+4. ✅ Check success criteria above
+5. ⏭️ For production: Enable hash verification, use real certificates
+
+---
+
+**Status: 🚀 READY FOR TESTING**  
+**Location: C:\Users\chris\Desktop\Workspace\PulsarRAT_Deploy\**  
+**Test Date: November 9, 2026**

@@ -30,9 +30,10 @@ public sealed class AdminConnection : IDisposable
     private NetworkStream _stream;
     private Thread _receiveThread;
     private volatile bool _connected;
+    private int _disconnecting;
     private readonly object _sendLock = new object();
 
-    private readonly ConcurrentDictionary<Type, ConcurrentQueue<TaskCompletionSource<IMessage>>> _waiters = new();
+    private readonly MessageWaiterRegistry _waiters = new();
 
     public bool Connected => _connected;
 
@@ -65,6 +66,8 @@ public sealed class AdminConnection : IDisposable
     {
         _tcp = new TcpClient();
         _tcp.Connect(host, port);
+        _tcp.ReceiveTimeout = 30000;
+        _tcp.SendTimeout = 10000;
         _stream = _tcp.GetStream();
         _connected = true;
 
@@ -120,6 +123,7 @@ public sealed class AdminConnection : IDisposable
         var result = await pending;
         if (result == null || !result.Result)
         {
+            Disconnect();
             throw new TimeoutException("server rejected the identification");
         }
 
@@ -132,16 +136,16 @@ public sealed class AdminConnection : IDisposable
     /// </summary>
     public Task<TMessage> WaitForAsync<TMessage>(TimeSpan timeout) where TMessage : class, IMessage
     {
-        var tcs = new TaskCompletionSource<IMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var queue = _waiters.GetOrAdd(typeof(TMessage), _ => new ConcurrentQueue<TaskCompletionSource<IMessage>>());
-        queue.Enqueue(tcs);
+        return WaitForAsync(timeout, (TMessage message) => true);
+    }
 
-        if (timeout > Timeout.InfiniteTimeSpan && timeout != TimeSpan.Zero)
-        {
-            _ = Task.Delay(timeout).ContinueWith(_ => tcs.TrySetResult(null), TaskScheduler.Default);
-        }
-
-        return tcs.Task.ContinueWith(t => t.Result as TMessage, TaskScheduler.Default);
+    /// <summary>
+    /// Registers a waiter for the next matching message of the given type.
+    /// </summary>
+    public Task<TMessage> WaitForAsync<TMessage>(TimeSpan timeout, Func<TMessage, bool> matches)
+        where TMessage : class, IMessage
+    {
+        return _waiters.WaitForAsync(timeout, matches);
     }
 
     /// <summary>
@@ -181,8 +185,7 @@ public sealed class AdminConnection : IDisposable
             {
                 var header = ReadExactly(HeaderSize);
                 int length = BinaryPrimitives.ReadInt32LittleEndian(header);
-                if (length <= 0)
-                    throw new InvalidDataException("invalid frame length");
+                MessageInputLimits.ValidateFrameLength(length);
 
                 var payload = ReadExactly(length);
                 var message = PulsarMessagePackSerializer.Deserialize(payload);
@@ -201,11 +204,7 @@ public sealed class AdminConnection : IDisposable
 
     private void DispatchWaiters(IMessage message)
     {
-        if (_waiters.TryGetValue(message.GetType(), out var queue)
-            && queue.TryDequeue(out var waiter))
-        {
-            waiter.TrySetResult(message);
-        }
+        _waiters.Dispatch(message);
     }
 
     private byte[] ReadExactly(int count)
@@ -255,21 +254,16 @@ public sealed class AdminConnection : IDisposable
 
     private void HandleDisconnect()
     {
-        if (!_connected)
+        if (Interlocked.Exchange(ref _disconnecting, 1) == 1 || !_connected)
             return;
 
         _connected = false;
 
-        foreach (var queue in _waiters.Values)
-        {
-            while (queue.TryDequeue(out var waiter))
-            {
-                waiter.TrySetResult(null);
-            }
-        }
+        _waiters.CancelAll();
 
         try { _stream?.Close(); } catch { }
         try { _tcp?.Close(); } catch { }
+        try { _receiveThread?.Join(1000); } catch { }
 
         Disconnected?.Invoke();
     }
@@ -279,5 +273,6 @@ public sealed class AdminConnection : IDisposable
     public void Dispose()
     {
         HandleDisconnect();
+        _waiters.Dispose();
     }
 }

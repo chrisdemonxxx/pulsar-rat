@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using System.Windows;
 using System.Windows.Input;
 using Pulsar.Server.Networking;
 using Pulsar.Server.Persistence;
@@ -12,29 +13,209 @@ namespace Pulsar.Server.ViewModels
     /// <summary>
     /// ViewModel for PulsarMainWindow (WPF port of FrmMain)
     /// Implements MVVM pattern for dashboard and client management
+    /// Provides data binding for connected/offline clients and real-time updates
     /// </summary>
     public class MainViewModel : INotifyPropertyChanged
     {
+        private PulsarServer _listenServer;
         private Client _selectedClient;
         private ObservableCollection<Client> _onlineClients;
         private ObservableCollection<OfflineClientRecord> _offlineClients;
         private string _listeningStatus;
         private int _connectedClientCount;
         private bool _isLoading;
+        private bool _isListening;
 
         /// <summary>
-        /// Initializes a new instance of MainViewModel
+        /// Initializes a new instance of MainViewModel with an optional server reference
         /// </summary>
-        public MainViewModel()
+        /// <param name="listenServer">Optional PulsarServer instance for binding to real data</param>
+        public MainViewModel(PulsarServer listenServer = null)
         {
+            _listenServer = listenServer;
             _onlineClients = new ObservableCollection<Client>();
             _offlineClients = new ObservableCollection<OfflineClientRecord>();
             _listeningStatus = "Not listening";
             _connectedClientCount = 0;
             _isLoading = false;
+            _isListening = false;
 
             // Initialize commands
             InitializeCommands();
+
+            // Wire up server events if provided
+            if (_listenServer != null)
+            {
+                WireUpServerEvents();
+                RefreshClientLists();
+            }
+        }
+
+        /// <summary>
+        /// Wires up event handlers to the server for real-time updates
+        /// </summary>
+        private void WireUpServerEvents()
+        {
+            if (_listenServer == null) return;
+
+            _listenServer.ClientConnected += OnServerClientConnected;
+            _listenServer.ClientDisconnected += OnServerClientDisconnected;
+
+            // Initial status
+            UpdateListeningStatus();
+        }
+
+        /// <summary>
+        /// Unwires event handlers from the server (cleanup)
+        /// </summary>
+        private void UnwireServerEvents()
+        {
+            if (_listenServer == null) return;
+
+            _listenServer.ClientConnected -= OnServerClientConnected;
+            _listenServer.ClientDisconnected -= OnServerClientDisconnected;
+        }
+
+        /// <summary>
+        /// Handles server ClientConnected event
+        /// </summary>
+        private void OnServerClientConnected(Client client)
+        {
+            if (client == null) return;
+
+            // Add to online clients collection (dispatch to UI thread)
+            Application.Current?.Dispatcher.Invoke(() =>
+            {
+                if (!OnlineClients.Contains(client))
+                {
+                    OnlineClients.Add(client);
+                }
+                ConnectedClientCount = OnlineClients.Count;
+            });
+        }
+
+        /// <summary>
+        /// Handles server ClientDisconnected event
+        /// </summary>
+        private void OnServerClientDisconnected(Client client)
+        {
+            if (client == null) return;
+
+            // Remove from online clients collection (dispatch to UI thread)
+            Application.Current?.Dispatcher.Invoke(() =>
+            {
+                OnlineClients.Remove(client);
+                ConnectedClientCount = OnlineClients.Count;
+
+                // If this was the selected client, clear selection
+                if (SelectedClient == client)
+                {
+                    SelectedClient = null;
+                }
+            });
+        }
+
+        /// <summary>
+        /// Refreshes the lists of online and offline clients from the server
+        /// </summary>
+        private void RefreshClientLists()
+        {
+            if (_listenServer == null) return;
+
+            Application.Current?.Dispatcher.Invoke(() =>
+            {
+                try
+                {
+                    // Clear and repopulate online clients
+                    OnlineClients.Clear();
+                    foreach (var client in _listenServer.ConnectedClients)
+                    {
+                        if (client != null && client.Identified)
+                        {
+                            OnlineClients.Add(client);
+                        }
+                    }
+
+                    ConnectedClientCount = OnlineClients.Count;
+
+                    // Load offline clients from repository (static class)
+                    try
+                    {
+                        OfflineClients.Clear();
+                        var offlineRecords = OfflineClientRepository.GetAllClients();
+                        foreach (var record in offlineRecords)
+                        {
+                            OfflineClients.Add(record);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"Error loading offline clients: {ex.Message}");
+                    }
+
+                    UpdateListeningStatus();
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Error refreshing client lists: {ex.Message}");
+                }
+            });
+        }
+
+        /// <summary>
+        /// Updates the listening status text based on server state
+        /// </summary>
+        private void UpdateListeningStatus()
+        {
+            if (_listenServer == null)
+            {
+                ListeningStatus = "Not listening";
+                IsListening = false;
+                return;
+            }
+
+            try
+            {
+                if (_listenServer.Listening)
+                {
+                    // Try to get port information if available
+                    ListeningStatus = $"Listening (Port 8080)"; // Default port
+                    IsListening = true;
+                }
+                else
+                {
+                    ListeningStatus = "Not listening";
+                    IsListening = false;
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error updating listening status: {ex.Message}");
+                ListeningStatus = "Error";
+                IsListening = false;
+            }
+        }
+
+        /// <summary>
+        /// Sets the PulsarServer reference (for late binding)
+        /// </summary>
+        public void SetServer(PulsarServer server)
+        {
+            UnwireServerEvents();
+            _listenServer = server;
+
+            if (_listenServer != null)
+            {
+                WireUpServerEvents();
+                RefreshClientLists();
+            }
+            else
+            {
+                OnlineClients.Clear();
+                OfflineClients.Clear();
+                ListeningStatus = "Not listening";
+                ConnectedClientCount = 0;
+            }
         }
 
         /// <summary>
@@ -135,6 +316,22 @@ namespace Pulsar.Server.ViewModels
             }
         }
 
+        /// <summary>
+        /// Whether the server is currently listening for connections
+        /// </summary>
+        public bool IsListening
+        {
+            get => _isListening;
+            set
+            {
+                if (_isListening != value)
+                {
+                    _isListening = value;
+                    OnPropertyChanged();
+                }
+            }
+        }
+
         #region Commands
 
         public ICommand QuickMicrophoneCommand { get; private set; }
@@ -223,8 +420,20 @@ namespace Pulsar.Server.ViewModels
 
         private void ExecuteClearOfflineClients()
         {
-            System.Diagnostics.Debug.WriteLine("Clear Offline Clients clicked");
-            // TODO: Implement clear offline clients action
+            try
+            {
+                // Clear the offline clients collection
+                OfflineClients.Clear();
+
+                // Clear from repository (static method)
+                OfflineClientRepository.ClearOfflineClients();
+
+                System.Diagnostics.Debug.WriteLine("Offline clients cleared");
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error clearing offline clients: {ex.Message}");
+            }
         }
 
         #endregion

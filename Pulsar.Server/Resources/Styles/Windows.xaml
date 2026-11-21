@@ -1,0 +1,21 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- PulsarWindow Style -->
+    <Style x:Key="PulsarWindowStyle" TargetType="{x:Type Window}">
+        <Setter Property="Background" Value="{DynamicResource WindowBackgroundBrush}" />
+        <Setter Property="Foreground" Value="{DynamicResource WindowForegroundBrush}" />
+        <Setter Property="FontFamily" Value="Segoe UI" />
+        <Setter Property="FontSize" Value="11" />
+        <Setter Property="UseLayoutRounding" Value="True" />
+        <Setter Property="TextOptions.TextRenderingMode" Value="Auto" />
+    </Style>
+
+    <!-- PulsarDialog Style (inherits from PulsarWindowStyle) -->
+    <Style x:Key="PulsarDialogStyle" TargetType="{x:Type Window}" BasedOn="{StaticResource PulsarWindowStyle}">
+        <Setter Property="ResizeMode" Value="CanResizeWithGrip" />
+        <Setter Property="ShowInTaskbar" Value="False" />
+        <Setter Property="WindowStyle" Value="SingleBorderWindow" />
+    </Style>
+
+</ResourceDictionary>

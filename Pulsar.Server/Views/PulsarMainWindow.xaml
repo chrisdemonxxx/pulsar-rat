@@ -55,12 +55,45 @@
                         <ColumnDefinition Width="1*" />
                     </Grid.ColumnDefinitions>
                     
-                    <!-- Clients List (placeholder for wpfClientsHost) -->
+                    <!-- Clients List (DataGrid - Real Data Binding) -->
                     <Border Grid.Column="0" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Margin="4">
-                        <TextBlock Text="Clients List (WPF Host Placeholder)" 
-                                   VerticalAlignment="Center" 
-                                   HorizontalAlignment="Center"
-                                   Foreground="{DynamicResource TextForeground}" />
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            
+                            <!-- Client Count Header -->
+                            <TextBlock Grid.Row="0" 
+                                       Text="{Binding ConnectedClientCount, StringFormat='Connected: {0} clients'}" 
+                                       Foreground="{DynamicResource TextForeground}"
+                                       Margin="8,4,8,4"
+                                       FontWeight="Bold" />
+                            
+                            <!-- DataGrid for Clients -->
+                            <DataGrid Grid.Row="1"
+                                      ItemsSource="{Binding OnlineClients}"
+                                      SelectedItem="{Binding SelectedClient}"
+                                      AutoGenerateColumns="False"
+                                      CanUserAddRows="False"
+                                      CanUserDeleteRows="False"
+                                      CanUserReorderColumns="False"
+                                      CanUserResizeRows="False"
+                                      CanUserSortColumns="True"
+                                      SelectionMode="Single"
+                                      Background="{DynamicResource PanelBackground}"
+                                      Foreground="{DynamicResource TextForeground}"
+                                      RowBackground="{DynamicResource PanelBackground}"
+                                      AlternatingRowBackground="{DynamicResource PanelBackground}"
+                                      GridLinesVisibility="Horizontal"
+                                      HeadersVisibility="Column">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Endpoint" Binding="{Binding EndPoint}" Width="*" IsReadOnly="True" />
+                                    <DataGridTextColumn Header="User" Binding="{Binding Value.Username}" Width="150" IsReadOnly="True" />
+                                    <DataGridCheckBoxColumn Header="Connected" Binding="{Binding Connected}" Width="80" IsReadOnly="True" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+                        </Grid>
                     </Border>
                     
                     <!-- Client Info Panel -->
@@ -121,9 +154,37 @@
                         
                         <!-- Client Info List -->
                         <GroupBox Header="Information" Margin="0,8,0,8" Foreground="{DynamicResource TextForeground}">
-                            <ListBox Height="150" Foreground="{DynamicResource TextForeground}">
-                                <ListBoxItem>Client Info 1</ListBoxItem>
-                                <ListBoxItem>Client Info 2</ListBoxItem>
+                            <ListBox Height="150" Foreground="{DynamicResource TextForeground}" Background="{DynamicResource PanelBackground}">
+                                <ListBoxItem>
+                                    <TextBlock>
+                                        <Run Text="Selected: " FontWeight="Bold" />
+                                        <Run Text="{Binding SelectedClient.Value.Username, Mode=OneWay}" />
+                                    </TextBlock>
+                                </ListBoxItem>
+                                <ListBoxItem>
+                                    <TextBlock>
+                                        <Run Text="IP: " FontWeight="Bold" />
+                                        <Run Text="{Binding SelectedClient.Value.PublicIP, Mode=OneWay}" />
+                                    </TextBlock>
+                                </ListBoxItem>
+                                <ListBoxItem>
+                                    <TextBlock>
+                                        <Run Text="Country: " FontWeight="Bold" />
+                                        <Run Text="{Binding SelectedClient.Value.Country, Mode=OneWay}" />
+                                    </TextBlock>
+                                </ListBoxItem>
+                                <ListBoxItem>
+                                    <TextBlock>
+                                        <Run Text="Connected: " FontWeight="Bold" />
+                                        <Run Text="{Binding SelectedClient.Connected, Mode=OneWay}" />
+                                    </TextBlock>
+                                </ListBoxItem>
+                                <ListBoxItem>
+                                    <TextBlock>
+                                        <Run Text="Identified: " FontWeight="Bold" />
+                                        <Run Text="{Binding SelectedClient.Identified, Mode=OneWay}" />
+                                    </TextBlock>
+                                </ListBoxItem>
                             </ListBox>
                         </GroupBox>
                         
@@ -146,12 +207,44 @@
 
             <!-- Tab 3: Offline Clients -->
             <TabItem Header="Offline Clients">
-                <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Margin="4">
-                    <TextBlock Text="Offline Clients List (AeroListView Placeholder)" 
-                               VerticalAlignment="Center" 
-                               HorizontalAlignment="Center"
-                               Foreground="{DynamicResource TextForeground}" />
-                </Border>
+                <Grid Background="{DynamicResource PanelBackground}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    
+                    <!-- Header -->
+                    <TextBlock Grid.Row="0" 
+                               Text="{Binding OfflineClients.Count, StringFormat='Offline Records: {0}'}" 
+                               Foreground="{DynamicResource TextForeground}"
+                               Margin="8,4,8,4"
+                               FontWeight="Bold" />
+                    
+                    <!-- ListBox for Offline Clients -->
+                    <ListBox Grid.Row="1"
+                             ItemsSource="{Binding OfflineClients}"
+                             Background="{DynamicResource PanelBackground}"
+                             Foreground="{DynamicResource TextForeground}"
+                             Margin="4">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding ClientId, StringFormat='ID: {0}'}" />
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                    
+                    <!-- Action Buttons -->
+                    <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="4">
+                        <Button Content="Delete Selected" Margin="2" Padding="8" 
+                                Background="{DynamicResource ButtonBackground}"
+                                Foreground="{DynamicResource TextForeground}" />
+                        <Button Content="Clear All" Margin="2" Padding="8"
+                                Command="{Binding ClearOfflineClientsCommand}"
+                                Background="{DynamicResource ButtonBackground}"
+                                Foreground="{DynamicResource TextForeground}" />
+                    </StackPanel>
+                </Grid>
             </TabItem>
 
             <!-- Tab 4: Heat Map -->

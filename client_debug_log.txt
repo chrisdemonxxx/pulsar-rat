@@ -1,0 +1,26 @@
+11/20/2026 3:17:32 PM: [CLIENT ERROR: CJs@CJS: System.IO.DirectoryNotFoundException: Could not find a part of the path 'C:\Users\chris\AppData\Roaming\Logs'.
+   at System.IO.__Error.WinIOError(Int32 errorCode, String maybeFullPath)
+11/20/2026 3:17:40 PM: [CLIENT ERROR: CJs@CJS: System.IO.DirectoryNotFoundException: Could not find a part of the path 'C:\Users\chris\AppData\Roaming\Logs'.
+   at System.IO.__Error.WinIOError(Int32 errorCode, String maybeFullPath)
+11/20/2026 3:17:40 PM: [CLIENT ERROR: CJs@CJS: System.IO.DirectoryNotFoundException: Could not find a part of the path 'C:\Users\chris\AppData\Roaming\Logs'.
+   at System.IO.__Error.WinIOError(Int32 errorCode, String maybeFullPath)
+11/20/2026 3:17:40 PM: [CLIENT ERROR: CJs@CJS: System.IO.DirectoryNotFoundException: Could not find a part of the path 'C:\Users\chris\AppData\Roaming\Logs'.
+   at System.IO.__Error.WinIOError(Int32 errorCode, String maybeFullPath)
+11/20/2026 3:17:40 PM: [CLIENT ERROR: CJs@CJS: System.IO.DirectoryNotFoundException: Could not find a part of the path 'C:\Users\chris\AppData\Roaming\Logs'.
+   at System.IO.__Error.WinIOError(Int32 errorCode, String maybeFullPath)
+11/20/2026 3:17:41 PM: [CLIENT ERROR: CJs@CJS: System.IO.DirectoryNotFoundException: Could not find a part of the path 'C:\Users\chris\AppData\Roaming\Logs'.
+   at System.IO.__Error.WinIOError(Int32 errorCode, String maybeFullPath)
+11/20/2026 3:17:48 PM: [CLIENT ERROR: CJs@CJS: System.IO.DirectoryNotFoundException: Could not find a part of the path 'C:\Users\chris\AppData\Roaming\Logs'.
+   at System.IO.__Error.WinIOError(Int32 errorCode, String maybeFullPath)
+11/20/2026 3:17:49 PM: [CLIENT ERROR: CJs@CJS: System.IO.DirectoryNotFoundException: Could not find a part of the path 'C:\Users\chris\AppData\Roaming\Logs'.
+   at System.IO.__Error.WinIOError(Int32 errorCode, String maybeFullPath)
+11/20/2026 3:20:30 PM: [CLIENT ERROR: CJs@CJS: System.Exception: StreamCodec can not be null.
+   at Pulsar.Client.Messages.HVNCHandler.CaptureFrame(Int32 displayIndex)
+11/20/2026 7:20:09 PM: [CLIENT ERROR: CJs@CJS: Cloning browser profile from 'C:\Users\chris\AppData\Roaming\Mozilla\Firefox\Profiles' to 'C:\Users\chris\AppData\Roaming\Mozilla\Firefox\HVNCProfile'
+11/20/2026 7:20:09 PM: [CLIENT ERROR: CJs@CJS: Removing existing destination directory: C:\Users\chris\AppData\Roaming\Mozilla\Firefox\HVNCProfile
+11/20/2026 7:20:15 PM: [CLIENT ERROR: CJs@CJS: [BrowserClone] Using handle hijacking for locked files...
+11/20/2026 7:20:44 PM: [CLIENT ERROR: CJs@CJS: [BrowserClone] Browser profile cloned successfully with handle hijacking.
+11/20/2026 7:20:44 PM: [CLIENT ERROR: CJs@CJS: System.ArgumentException: DLL bytes are empty or null.
+   at Pulsar.Client.Helper.HVNC.ProcessController.<StartFirefoxAsync>d__20.MoveNext()
+11/20/2026 7:20:44 PM: [CLIENT ERROR: CJs@CJS: System.ArgumentException: DLL bytes are empty or null.
+   at Pulsar.Client.Helper.HVNC.ProcessController.<StartFirefoxAsync>d__20.MoveNext()

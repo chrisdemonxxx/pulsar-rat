@@ -160,6 +160,20 @@
         </Style>
     </UserControl.Resources>
     <Grid>
+        <Border x:Name="StateOverlay"
+                Panel.ZIndex="10"
+                IsHitTestVisible="False"
+                Visibility="Collapsed"
+                HorizontalAlignment="Stretch"
+                VerticalAlignment="Stretch"
+                Background="{DynamicResource GridBackgroundBrush}">
+            <TextBlock x:Name="StateTextBlock"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center"
+                       FontSize="14"
+                       Foreground="{DynamicResource RowForegroundBrush}"
+                       Text="No connected clients." />
+        </Border>
         <DataGrid x:Name="ClientsGrid"
                   AutoGenerateColumns="False"
                   HeadersVisibility="Column"

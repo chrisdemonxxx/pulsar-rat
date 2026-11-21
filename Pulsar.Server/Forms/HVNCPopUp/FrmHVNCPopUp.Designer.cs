@@ -124,7 +124,7 @@
             btnStart.Name = "btnStart";
             btnStart.Size = new System.Drawing.Size(88, 35);
             btnStart.TabIndex = 7;
-            btnStart.Text = "Start";
+            btnStart.Text = "Launch";
             btnStart.UseVisualStyleBackColor = true;
             btnStart.Click += btnStart_Click;
             // 
@@ -220,7 +220,9 @@
             MinimumSize = new System.Drawing.Size(715, 441);
             Name = "FrmHVNCPopUp";
             StartPosition = System.Windows.Forms.FormStartPosition.CenterParent;
-            Text = "Generic Chromium Browser Configuration";
+            Text = "Custom Browser Launcher";
+            AcceptButton = btnStart;
+            CancelButton = btnCancel;
             Load += FrmHVNCPopUp_Load;
             groupBox1.ResumeLayout(false);
             groupBox1.PerformLayout();

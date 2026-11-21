@@ -1,68 +1,73 @@
 # FAQ
 
-## Table of Contents
+## Why is the shellcode option unavailable?
 
-* [Shellcode Not Working](#shellcode-not-working)
+Donut is an optional native build dependency. A normal `Release` build of the server does not build or copy `donut.exe`.
 
-  * [Enabling Shellcode Outputs](#enabling-shellcode-outputs)
-  * [Alternative Build Process](#alternative-build-process)
+Use `ReleaseWithDonut` on Windows with the Donut submodule and Visual Studio 2022 C++ Build Tools:
 
----
+```powershell
+git submodule update --init external/donut
+dotnet build Pulsar.Server/Pulsar.Server.csproj -c ReleaseWithDonut
+```
 
-## Shellcode Not Working
+The target runs `Pulsar.Server/build-donut.bat`, which:
 
-If shellcode generation or execution isn't producing the expected outputs, it often means the project wasn't built with the shellcode feature enabled. Follow the steps below to ensure your build configuration includes Donut support.
+1. locates a Visual Studio 2022 `vcvarsall.bat`;
+2. runs `nmake -f Makefile.msvc` in `external/donut`;
+3. preserves/restores Donut's generated loader source files;
+4. fails if `donut.exe` was not produced;
+5. lets the project copy Donut into `bin/Release/net9.0-windows`.
 
-### Enabling Shellcode Outputs
+Expected artifacts after a successful native build:
 
-1. **Open the solution**: Launch Visual Studio and open `Pulsar.sln`.
+```text
+external/donut/donut.exe
+bin/Release/net9.0-windows/donut.exe
+```
 
-   ![Open Project](Images/open_project.png)
+The server's builder invokes Donut with an argument list rather than a concatenated command line, so an input/output path containing spaces stays one argument. It also resolves the final managed entry point after obfuscation/packing rather than assuming the pre-transform name.
 
-2. **Select build configuration**:
+If Donut output is built elsewhere, pass that executable explicitly through the builder's Donut path. A downloaded binary may be version-incompatible with the checked-in submodule and is not the CI baseline. Creating a `.bin` shellcode artifact does not prove that it executes on a particular target.
 
-   * Locate the configuration selector on the toolbar (usually reads `Debug` or `Release`).
-   
-   ![Select Configuration](Images/select_config.png)
-   
-   * Change it to **ReleaseWithDonut**.
+## Why is HVNC injection unavailable after a managed build?
 
-   ![Build with Donut Enabled](Images/build_with_donut.png)
+HVNC injection requires the native x64 file:
 
-3. **Build the solution**:
+```text
+bin/Release/net9.0-windows/HVNCInjection.x64.dll
+```
 
-   * Go to `Build → Build Solution` or press `Ctrl + Shift + B`.
+Build it with the Visual Studio/MSBuild C++ toolchain:
 
-   ![Build Solution](Images/build_solution.png)
+```powershell
+msbuild HVNCInjection/HVNCInjection.vcxproj /m /p:Configuration=Release /p:Platform=x64 /p:SolutionDir="$((Get-Location).Path)\"
+```
 
-4. **Verify outputs**:
+A managed-only build does not supply this DLL. The server reads it from its executable directory when preparing supported Chromium browser starts. The client performs reflective loading in the selected process; browser version, profile layout, process architecture, privileges, and Windows configuration remain environment-specific. The source has no automatic fallback for a missing or incompatible x64 injector.
 
-   * After a successful build, navigate to `bin/Release`.
-   * Confirm that the shellcode converter files (donut.exe) are present.
+## Does `Pulsar.Client` target .NET Framework 4.8?
 
-### Alternative Build Process
+No. The current client targets `net9.0-windows`. The server and admin client also target `net9.0-windows`. `Pulsar.Common` and `Pulsar.Common.Tests` multi-target `net48;net9.0-windows`; that does not make the client a `net48` application.
 
-If you cannot use Visual Studio or the standard build fails, enable shellcode outputs manually:
+## Is the TCP transport TLS?
 
-1. **Download Donut**:
+No. The transport is plain TCP. Release traffic uses the AES-256-GCM `SecureMessageEnvelope` at the Pulsar message layer. The Kestrel Web API is separately plain HTTP in the source; any HTTPS/reverse-proxy boundary is deployment-owned. See `PROTOCOL.md`.
 
-   * Visit the [Donut Releases page](https://github.com/TheWover/donut/releases).
-   * Download the latest `donut.exe` for your operating system.
+## Why did an old peer disconnect after a new message was added?
 
-   ![Download Donut](Images/download_donut.png)
+The message ID is the CLR full type name. Unknown type names fail MessagePack deserialization and disconnect the receiver. A known type with no registered processor is decoded and then dropped with an unsupported-message diagnostic. Treat additions as receiver compatibility changes and use the process in `Updating_Clients.md`.
 
-2. **Extract the binary**:
+## How do I verify the documentation's build/test commands without executing a client?
 
-   * Unzip or extract the downloaded archive to locate `donut.exe`.
+Use the managed tests and standalone local harnesses:
 
-3. **Copy to Pulsar output**:
+```powershell
+dotnet test Pulsar.Common.Tests/Pulsar.Common.Tests.csproj -c Release -f net48
+dotnet test Pulsar.Common.Tests/Pulsar.Common.Tests.csproj -c Release -f net9.0-windows
+dotnet run --project tools/webapi-smoke/WebApiSmoke.csproj -c Release
+dotnet build Pulsar.AdminClient/Pulsar.AdminClient.csproj -c Debug
+dotnet run --project tools/admin-relay-smoke/AdminRelaySmoke.csproj -c Debug
+```
 
-   * Place `donut.exe` into your Pulsar build directory: `bin/ReleaseWithDonut`.
-
-   ![Move Donut to Bin](Images/move_to_bin.png)
-
-4. **Verify manual setup**:
-
-   * Check Pulsar if the build shellcode artifact is enabled.
-
----
+The builder/registration tests and CI manifest check can validate a generated artifact without launching it. They do not prove runtime behavior on a separate machine.

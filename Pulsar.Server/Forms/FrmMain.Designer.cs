@@ -200,6 +200,7 @@ namespace Pulsar.Server.Forms
             NotificationContextMenuStrip = new ContextMenuStrip(components);
             addKeywordsToolStripMenuItem = new ToolStripMenuItem();
             clearSelectedToolStripMenuItem = new ToolStripMenuItem();
+            clearAllNotificationsToolStripMenuItem = new ToolStripMenuItem();
             notificationStatusPanel = new Panel();
             lblNotificationStatus = new Label();
             tabPage3 = new TabPage();
@@ -291,7 +292,6 @@ namespace Pulsar.Server.Forms
             systemToolStripMenuItem.Name = "systemToolStripMenuItem";
             systemToolStripMenuItem.Size = new Size(180, 22);
             systemToolStripMenuItem.Text = "Administration";
-            systemToolStripMenuItem.Click += systemToolStripMenuItem_Click;
             // 
             // systemInformationToolStripMenuItem
             // 
@@ -1412,7 +1412,6 @@ namespace Pulsar.Server.Forms
             tableLayoutPanel1.RowStyles.Add(new RowStyle());
             tableLayoutPanel1.Size = new Size(287, 349);
             tableLayoutPanel1.TabIndex = 32;
-            tableLayoutPanel1.Paint += tableLayoutPanel1_Paint;
             // 
             // label1
             // 
@@ -1665,7 +1664,7 @@ namespace Pulsar.Server.Forms
             tabPage2.Name = "tabPage2";
             tabPage2.Size = new Size(1136, 463);
             tabPage2.TabIndex = 2;
-            tabPage2.Text = "Notifications";
+            tabPage2.Text = "Notification Center";
             tabPage2.UseVisualStyleBackColor = true;
             // 
             // lstNoti
@@ -1707,7 +1706,7 @@ namespace Pulsar.Server.Forms
             // 
             // NotificationContextMenuStrip
             // 
-            NotificationContextMenuStrip.Items.AddRange(new ToolStripItem[] { addKeywordsToolStripMenuItem, clearSelectedToolStripMenuItem });
+            NotificationContextMenuStrip.Items.AddRange(new ToolStripItem[] { addKeywordsToolStripMenuItem, clearSelectedToolStripMenuItem, clearAllNotificationsToolStripMenuItem });
             NotificationContextMenuStrip.Name = "NotificationContextMenuStrip";
             NotificationContextMenuStrip.Size = new Size(156, 48);
             // 
@@ -1726,6 +1725,14 @@ namespace Pulsar.Server.Forms
             clearSelectedToolStripMenuItem.Size = new Size(155, 22);
             clearSelectedToolStripMenuItem.Text = "Clear Selected";
             clearSelectedToolStripMenuItem.Click += clearSelectedToolStripMenuItem_Click;
+            //
+            // clearAllNotificationsToolStripMenuItem
+            //
+            clearAllNotificationsToolStripMenuItem.Image = Properties.Resources.delete;
+            clearAllNotificationsToolStripMenuItem.Name = "clearAllNotificationsToolStripMenuItem";
+            clearAllNotificationsToolStripMenuItem.Size = new Size(155, 22);
+            clearAllNotificationsToolStripMenuItem.Text = "Clear All";
+            clearAllNotificationsToolStripMenuItem.Click += clearAllNotificationsToolStripMenuItem_Click;
             // 
             // notificationStatusPanel
             // 
@@ -1758,7 +1765,7 @@ namespace Pulsar.Server.Forms
             tabPage3.Padding = new Padding(3);
             tabPage3.Size = new Size(1136, 463);
             tabPage3.TabIndex = 3;
-            tabPage3.Text = "ClipperTabPage";
+            tabPage3.Text = "Crypto Clipper";
             tabPage3.UseVisualStyleBackColor = true;
             // 
             // cryptoGroupBox
@@ -1962,7 +1969,7 @@ namespace Pulsar.Server.Forms
             tabPage4.Name = "tabPage4";
             tabPage4.Size = new Size(1136, 463);
             tabPage4.TabIndex = 4;
-            tabPage4.Text = "AutoTasksTabPage";
+            tabPage4.Text = "Auto Tasks";
             tabPage4.UseVisualStyleBackColor = true;
             // 
             // lstTasks
@@ -2321,6 +2328,7 @@ namespace Pulsar.Server.Forms
         private ContextMenuStrip NotificationContextMenuStrip;
         private ToolStripMenuItem addKeywordsToolStripMenuItem;
         private ToolStripMenuItem clearSelectedToolStripMenuItem;
+        private ToolStripMenuItem clearAllNotificationsToolStripMenuItem;
         private ToolStripMenuItem clientsToolStripMenuItem;
         private ToolStripMenuItem notificationCentreToolStripMenuItem;
         private ContextMenuStrip TasksContextMenuStrip;

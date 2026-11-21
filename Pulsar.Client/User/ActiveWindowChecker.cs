@@ -35,6 +35,7 @@ namespace Pulsar.Client.User
 
         private IntPtr _hookId;
         private readonly WinEventDelegate _winEventDelegate;
+        private bool _disposed;
 
         public ActiveWindowChecker(PulsarClient client)
         {
@@ -53,7 +54,7 @@ namespace Pulsar.Client.User
 
         private void WinEventProc(IntPtr hWinEventHook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
         {
-            if (eventType == EVENT_SYSTEM_FOREGROUND)
+            if (!_disposed && eventType == EVENT_SYSTEM_FOREGROUND)
             {
                     string currentWindowTitle = GetCurrentWindowTitle();
                     _client.Send(new SetUserActiveWindowStatus { WindowTitle = currentWindowTitle }); 
@@ -81,8 +82,9 @@ namespace Pulsar.Client.User
 
         protected virtual void Dispose(bool disposing)
         {
-            if (disposing)
+            if (disposing && !_disposed)
             {
+                _disposed = true;
                 _tokenSource.Cancel();
                 _tokenSource.Dispose();
 

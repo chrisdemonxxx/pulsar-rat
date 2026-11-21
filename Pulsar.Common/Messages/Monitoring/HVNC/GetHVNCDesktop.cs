@@ -27,5 +27,11 @@ namespace Pulsar.Common.Messages.Monitoring.HVNC
 
         [Key(7)]
         public bool IsBufferedMode { get; set; } = true;
+
+        [Key(8)]
+        public string SessionId { get; set; } = string.Empty;
+
+        [Key(9)]
+        public long FrameSequence { get; set; }
     }
 }

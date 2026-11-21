@@ -25,6 +25,7 @@ namespace Pulsar.Server.Controls.Wpf
         private bool _groupByCountry;
         private Predicate<object>? _filter;
         private bool _suppressSelectionNotifications;
+        private bool _stateOverlayExplicit;
     private bool _isDragSelecting;
     private ClientListEntry? _dragAnchorEntry;
     private Point _dragStartPoint;
@@ -112,6 +113,19 @@ namespace Pulsar.Server.Controls.Wpf
             }
 
             updater(entry);
+            if (Dispatcher.CheckAccess())
+            {
+                _stateOverlayExplicit = false;
+                RefreshEmptyState();
+            }
+            else
+            {
+                Dispatcher.Invoke(() =>
+                {
+                    _stateOverlayExplicit = false;
+                    RefreshEmptyState();
+                });
+            }
             return entry;
         }
 
@@ -129,6 +143,9 @@ namespace Pulsar.Server.Controls.Wpf
                     _entries.Remove(target);
                     _entryLookup.Remove(client);
                 }
+                _stateOverlayExplicit = false;
+                RefreshEmptyState();
+                SelectionChanged?.Invoke(this, SelectedEntries);
             }
 
             if (Dispatcher.CheckAccess())
@@ -147,6 +164,9 @@ namespace Pulsar.Server.Controls.Wpf
             {
                 _entries.Clear();
                 _entryLookup.Clear();
+                _stateOverlayExplicit = false;
+                RefreshEmptyState();
+                SelectionChanged?.Invoke(this, Array.Empty<ClientListEntry>());
             }
 
             if (Dispatcher.CheckAccess())
@@ -162,8 +182,84 @@ namespace Pulsar.Server.Controls.Wpf
         public void ApplyFilter(Predicate<ClientListEntry>? filter)
         {
             _filter = filter != null ? new Predicate<object>(o => filter((ClientListEntry)o)) : null;
-            Dispatcher.Invoke(() => ClientsView.Refresh());
+                Dispatcher.Invoke(() =>
+                {
+                    _stateOverlayExplicit = false;
+                    ClientsView.Refresh();
+                    PruneHiddenSelection();
+                    RefreshEmptyState();
+                });
         }
+
+            public void ShowLoading()
+            {
+                Dispatcher.Invoke(() => SetStateOverlay("Loading connected clients...", true, true));
+            }
+
+            public void ShowError(string message)
+            {
+                Dispatcher.Invoke(() => SetStateOverlay(string.IsNullOrWhiteSpace(message) ? "Unable to load clients." : message, true, true));
+            }
+
+            public void ShowEmpty(string message)
+            {
+                Dispatcher.Invoke(() => SetStateOverlay(string.IsNullOrWhiteSpace(message) ? "No connected clients." : message, true, true));
+            }
+
+            private void SetStateOverlay(string message, bool visible, bool explicitState = false)
+            {
+                StateTextBlock.Text = message;
+                StateOverlay.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+                _stateOverlayExplicit = explicitState;
+            }
+
+            private void RefreshEmptyState()
+            {
+                if (_stateOverlayExplicit)
+                {
+                    return;
+                }
+
+                int visibleCount = ClientsView.Cast<ClientListEntry>().Count();
+                if (visibleCount == 0)
+                {
+                    SetStateOverlay(_filter == null
+                        ? "No connected clients."
+                        : "No clients match your search.", true);
+                }
+                else
+                {
+                    SetStateOverlay(string.Empty, false);
+                }
+            }
+
+            private void PruneHiddenSelection()
+            {
+                var hidden = ClientsGrid.SelectedItems
+                    .Cast<ClientListEntry>()
+                    .Where(entry => _filter != null && !_filter(entry))
+                    .ToArray();
+
+                if (hidden.Length == 0)
+                {
+                    return;
+                }
+
+                _suppressSelectionNotifications = true;
+                try
+                {
+                    foreach (var entry in hidden)
+                    {
+                        ClientsGrid.SelectedItems.Remove(entry);
+                    }
+                }
+                finally
+                {
+                    _suppressSelectionNotifications = false;
+                }
+
+                SelectionChanged?.Invoke(this, SelectedEntries);
+            }
 
         public void SetGroupByCountry(bool enabled)
         {

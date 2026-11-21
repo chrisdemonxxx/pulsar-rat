@@ -89,7 +89,7 @@ namespace Pulsar.Server.Networking
         /// <param name="messageLength">The length of the message.</param>
         private void OnClientRead(IMessage message, int messageLength)
         {
-            Debug.WriteLine($"[SERVER] Received packet: {message.GetType().Name} (Length: {messageLength} bytes) from {EndPoint}");
+            Debug.WriteLine($"[SERVER] Received {message.GetType().Name} ({messageLength} bytes).");
             var handler = ClientRead;
             handler?.Invoke(this, message, messageLength);
         }
@@ -119,8 +119,7 @@ namespace Pulsar.Server.Networking
 
             try
             {
-                // the port is always unique for each client
-                return this.EndPoint.Port.Equals(other.EndPoint.Port);
+                return EndPoint.Equals(other.EndPoint);
             }
             catch (Exception)
             {
@@ -151,6 +150,7 @@ namespace Pulsar.Server.Networking
 
         readonly object _readMessageLock = new object();
         readonly object _sendMessageLock = new object();
+        readonly object _sendQueueLock = new object();
         readonly object _proxyClientsLock = new object();
 
         /// <summary>
@@ -161,7 +161,13 @@ namespace Pulsar.Server.Networking
         /// <summary>
         /// The queue which holds messages to send.
         /// </summary>
-        private readonly ConcurrentQueue<IMessage> _sendBuffers = new ConcurrentQueue<IMessage>();
+        private const int MaxQueuedMessages = 256;
+        private readonly ConcurrentQueue<PendingSend> _sendBuffers = new ConcurrentQueue<PendingSend>();
+        private int _queuedMessageCount;
+        private int _sendPumpGeneration;
+        private Timer _identificationTimer;
+        private int _disconnecting;
+        private bool _identified;
 
         /// <summary>
         /// Determines if the client is currently sending messages.
@@ -185,7 +191,19 @@ namespace Pulsar.Server.Networking
         /// <summary>
         /// Determines if the client is identified.
         /// </summary>
-        public bool Identified { get; set; }
+        public bool Identified
+        {
+            get { return _identified; }
+            set
+            {
+                _identified = value;
+                if (value)
+                {
+                    try { _identificationTimer?.Dispose(); } catch { }
+                    _identificationTimer = null;
+                }
+            }
+        }
 
         /// <summary>
         /// Stores values of the user.
@@ -217,6 +235,11 @@ namespace Pulsar.Server.Networking
                 ConnectedTime = DateTime.UtcNow;
                 _stream = stream ?? throw new ArgumentNullException(nameof(stream));
                 _serverCertificate = serverCertificate ?? throw new ArgumentNullException(nameof(serverCertificate));
+                if (_stream.CanTimeout)
+                {
+                    _stream.ReadTimeout = 30000;
+                    _stream.WriteTimeout = 10000;
+                }
 
 #if DEBUG
                 var certificateUsable = SecureMessageEnvelopeHelper.CanUse(_serverCertificate);
@@ -257,6 +280,13 @@ namespace Pulsar.Server.Networking
                 _readBuffer = new byte[HEADER_SIZE];
                 _readOffset = 0;
                 _readLength = HEADER_SIZE;
+                _identificationTimer = new Timer(_ =>
+                {
+                    if (!Identified)
+                    {
+                        Disconnect();
+                    }
+                }, null, TimeSpan.FromSeconds(30), Timeout.InfiniteTimeSpan);
                 _stream.BeginRead(_readBuffer, _readOffset, _readBuffer.Length, AsyncReceive, null);
                 OnClientState(true);
             }
@@ -290,8 +320,7 @@ namespace Pulsar.Server.Networking
                         if (_readBuffer.Length == HEADER_SIZE)
                         {
                             var length = BitConverter.ToInt32(_readBuffer, 0);
-                            if (length <= 0)
-                                throw new InvalidDataException("Invalid message length.");
+                            MessageInputLimits.ValidateFrameLength(length);
 
                             _readBuffer = new byte[length];
                             _readOffset = 0;
@@ -349,12 +378,27 @@ namespace Pulsar.Server.Networking
         /// <param name="message">The message to be sent.</param>
         public void Send<T>(T message) where T : IMessage
         {
-            if (!Connected || message == null) return;
+            TrySend(message);
+        }
 
-            _sendBuffers.Enqueue(message);
-            if (Interlocked.Exchange(ref _sendingMessagesFlag, 1) == 0)
+        /// <summary>
+        /// Queues a message if the client connection can currently accept it.
+        /// </summary>
+        /// <returns><see langword="true"/> when the message was accepted by the send queue.</returns>
+        public bool TrySend<T>(T message) where T : IMessage
+        {
+            lock (_sendQueueLock)
             {
-                ThreadPool.QueueUserWorkItem(ProcessSendBuffers);
+                if (!Connected || message == null) return false;
+
+                var pending = new PendingSend(message);
+                if (!Enqueue(pending))
+                    return false;
+                if (Interlocked.Exchange(ref _sendingMessagesFlag, 1) == 0)
+                {
+                    ThreadPool.QueueUserWorkItem(ProcessSendBuffers, Volatile.Read(ref _sendPumpGeneration));
+                }
+                return true;
             }
         }
 
@@ -368,7 +412,36 @@ namespace Pulsar.Server.Networking
         {
             if (!Connected || message == null) return;
 
-            SafeSendMessage(message);
+            var pending = new PendingSend(message, new ManualResetEventSlim(false));
+            lock (_sendQueueLock)
+            {
+                if (!Connected || !Enqueue(pending))
+                    return;
+                if (Interlocked.Exchange(ref _sendingMessagesFlag, 1) == 0)
+                    ThreadPool.QueueUserWorkItem(ProcessSendBuffers, Volatile.Read(ref _sendPumpGeneration));
+            }
+            pending.Completed.Wait();
+        }
+
+        private bool Enqueue(PendingSend pending)
+        {
+            if (!Connected)
+            {
+                pending.Complete();
+                Disconnect();
+                return false;
+            }
+
+            if (Interlocked.Increment(ref _queuedMessageCount) > MaxQueuedMessages)
+            {
+                Interlocked.Decrement(ref _queuedMessageCount);
+                pending.Complete();
+                Disconnect();
+                return false;
+            }
+
+            _sendBuffers.Enqueue(pending);
+            return true;
         }
 
         /// <summary>
@@ -384,30 +457,20 @@ namespace Pulsar.Server.Networking
                 lock (_sendMessageLock)
                 {
                     if (_stream == null)
-                    {
-                        Debug.WriteLine("[SafeSendMessage] Stream is null, returning");
                         return;
-                    }
 
                     var prepared = PrepareMessageForSend(message);
                     if (prepared == null)
-                    {
-                        Debug.WriteLine("[SafeSendMessage] PrepareMessageForSend returned null");
                         return;
-                    }
 
-                    Debug.WriteLine($"[SafeSendMessage] Prepared message for send, about to serialize");
                     var payload = PulsarMessagePackSerializer.Serialize(prepared);
-                    Debug.WriteLine($"[SafeSendMessage] Serialized payload: {payload?.Length} bytes");
                     int totalLength = HEADER_SIZE + payload.Length;
                     var buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(totalLength);
                     try
                     {
                         System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(new Span<byte>(buffer, 0, HEADER_SIZE), payload.Length);
                         Buffer.BlockCopy(payload, 0, buffer, HEADER_SIZE, payload.Length);
-                        Debug.WriteLine($"[SafeSendMessage] About to write {totalLength} bytes to stream");
                         _stream.Write(buffer, 0, totalLength);
-                        Debug.WriteLine($"[SafeSendMessage] Successfully wrote {totalLength} bytes");
                     }
                     finally
                     {
@@ -417,9 +480,6 @@ namespace Pulsar.Server.Networking
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[SafeSendMessage ERROR] {ex.GetType().Name}: {ex.Message}");
-                string logFile = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "pulsar_server.log");
-                try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] [SafeSendMessage EXCEPTION] {ex.GetType().Name}: {ex.Message}\r\n[{System.DateTime.Now:HH:mm:ss.fff}]     Stack: {ex.StackTrace}\r\n"); } catch { }
                 OnClientFail(ex);
                 Disconnect();
             }
@@ -427,30 +487,58 @@ namespace Pulsar.Server.Networking
 
         private void ProcessSendBuffers(object state)
         {
+            int generation = state is int value ? value : -1;
             while (true)
             {
+                if (generation != Volatile.Read(ref _sendPumpGeneration))
+                    return;
+
                 if (!Connected)
                 {
                     SendCleanup(true);
                     return;
                 }
 
-                if (!_sendBuffers.TryDequeue(out var message))
+                if (!_sendBuffers.TryDequeue(out var pending))
                 {
-                    SendCleanup();
+                    lock (_sendQueueLock)
+                    {
+                        if (generation != Volatile.Read(ref _sendPumpGeneration))
+                            return;
+
+                        if (!_sendBuffers.IsEmpty && Connected)
+                            continue;
+
+                        Interlocked.Exchange(ref _sendingMessagesFlag, 0);
+                        return;
+                    }
+                }
+
+                Interlocked.Decrement(ref _queuedMessageCount);
+                if (generation != Volatile.Read(ref _sendPumpGeneration))
+                {
+                    pending.Complete();
                     return;
                 }
 
-                SafeSendMessage(message);
+                try { SafeSendMessage(pending.Message); }
+                finally { pending.Complete(); }
             }
         }
 
         private void SendCleanup(bool clear = false)
         {
-            Interlocked.Exchange(ref _sendingMessagesFlag, 0);
-            if (clear)
+            lock (_sendQueueLock)
             {
-                while (_sendBuffers.TryDequeue(out _)) ;
+                if (clear)
+                {
+                    while (_sendBuffers.TryDequeue(out var pending))
+                    {
+                        Interlocked.Decrement(ref _queuedMessageCount);
+                        pending.Complete();
+                    }
+                }
+                Interlocked.Exchange(ref _sendingMessagesFlag, 0);
             }
         }
 
@@ -516,6 +604,12 @@ namespace Pulsar.Server.Networking
         /// </summary>
         public void Disconnect()
         {
+            if (Interlocked.Exchange(ref _disconnecting, 1) == 1)
+                return;
+
+            try { _identificationTimer?.Dispose(); } catch { }
+            _identificationTimer = null;
+
             if (_stream != null)
             {
                 _stream.Dispose();
@@ -526,8 +620,31 @@ namespace Pulsar.Server.Networking
             _readOffset = 0;
             _readLength = HEADER_SIZE;
 
-            SendCleanup(true);
-            OnClientState(false);
+            lock (_sendQueueLock)
+            {
+                Interlocked.Increment(ref _sendPumpGeneration);
+                OnClientState(false);
+                while (_sendBuffers.TryDequeue(out var pending))
+                {
+                    Interlocked.Decrement(ref _queuedMessageCount);
+                    pending.Complete();
+                }
+                Interlocked.Exchange(ref _sendingMessagesFlag, 0);
+            }
+        }
+
+        private sealed class PendingSend
+        {
+            public readonly IMessage Message;
+            public readonly ManualResetEventSlim Completed;
+
+            public PendingSend(IMessage message, ManualResetEventSlim completed = null)
+            {
+                Message = message;
+                Completed = completed;
+            }
+
+            public void Complete() => Completed?.Set();
         }
     }
 }

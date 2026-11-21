@@ -9,6 +9,9 @@ namespace Pulsar.Common.Helpers
 {
     public static class FileHelper
     {
+        private const int MaxObfuscatedLogBytes = 64 * 1024 * 1024;
+        private const int MaxDecompressedLogChunkBytes = 8 * 1024 * 1024;
+        private const int MaxDecompressedLogBytes = 32 * 1024 * 1024;
         private static readonly char[] IllegalPathChars = Path.GetInvalidPathChars().Union(Path.GetInvalidFileNameChars()).ToArray();
 
         public static bool HasIllegalCharacters(string path)
@@ -71,6 +74,8 @@ namespace Pulsar.Common.Helpers
             if (appendText == null) appendText = string.Empty;
 
             byte[] plainBytes = Encoding.UTF8.GetBytes(appendText);
+            if (plainBytes.Length > MaxDecompressedLogChunkBytes)
+                throw new ArgumentException("Log text exceeds the maximum chunk size.", nameof(appendText));
 
             // Compress plaintext first to save space (backwards-compatible: readers will detect gzip)
             byte[] compressed = CompressGzip(plainBytes);
@@ -110,6 +115,10 @@ namespace Pulsar.Common.Helpers
 
             try
             {
+                var file = new FileInfo(filename);
+                if (file.Length > MaxObfuscatedLogBytes)
+                    return string.Empty;
+
                 byte[] allBytes = File.ReadAllBytes(filename);
                 if (allBytes.Length == 0) return string.Empty;
 
@@ -147,6 +156,8 @@ namespace Pulsar.Common.Helpers
                             if (deob.Length >= 2 && deob[0] == 0x1F && deob[1] == 0x8B)
                             {
                                 byte[] decompressedBytes = DecompressGzipToBytes(deob);
+                                if (sb.Length + decompressedBytes.Length > MaxDecompressedLogBytes)
+                                    throw new InvalidDataException("Decompressed log exceeds the maximum size.");
                                 sb.Append(Encoding.UTF8.GetString(decompressedBytes));
                             }
                             else
@@ -157,8 +168,8 @@ namespace Pulsar.Common.Helpers
                         }
                         catch
                         {
-                            // On any failure, try to at least interpret deob as UTF8 to avoid losing text
-                            try { sb.Append(Encoding.UTF8.GetString(deob)); } catch { /* ignore */ }
+                            framed = false;
+                            break;
                         }
                     }
 
@@ -197,7 +208,14 @@ namespace Pulsar.Common.Helpers
             using (var gzip = new System.IO.Compression.GZipStream(input, System.IO.Compression.CompressionMode.Decompress))
             using (var output = new MemoryStream())
             {
-                gzip.CopyTo(output);
+                var buffer = new byte[81920];
+                int read;
+                while ((read = gzip.Read(buffer, 0, buffer.Length)) > 0)
+                {
+                    if (output.Length + read > MaxDecompressedLogChunkBytes)
+                        throw new InvalidDataException("Decompressed log chunk exceeds the maximum size.");
+                    output.Write(buffer, 0, read);
+                }
                 return output.ToArray();
             }
         }

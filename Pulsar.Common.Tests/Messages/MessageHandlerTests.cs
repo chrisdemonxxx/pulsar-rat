@@ -3,6 +3,7 @@ using Pulsar.Common.Messages;
 using Pulsar.Common.Messages.Other;
 using Pulsar.Common.Networking;
 using System;
+using System.Collections.Generic;
 using System.Threading;
 
 namespace Pulsar.Common.Tests.Messages
@@ -163,6 +164,88 @@ namespace Pulsar.Common.Tests.Messages
             }
         }
 
+        [TestMethod]
+        public void Process_AsyncDispatch_PreservesOrderPerSender()
+        {
+            using (var release = new ManualResetEventSlim(false))
+            using (var firstStarted = new ManualResetEventSlim(false))
+            using (var completed = new ManualResetEventSlim(false))
+            {
+                var observed = new List<string>();
+                var orderLock = new object();
+                var sender = new FakeSender();
+                var orderedProcessor = new OrderedProcessor(firstStarted, release, completed, observed, orderLock);
+
+                MessageHandler.Register(orderedProcessor);
+                try
+                {
+                    MessageHandler.Process(sender, new SetStatus { Message = "first" });
+                    Assert.IsTrue(firstStarted.Wait(AsyncTimeoutMs));
+                    MessageHandler.Process(sender, new SetStatus { Message = "second" });
+                    MessageHandler.Process(sender, new SetStatus { Message = "third" });
+                    release.Set();
+                    Assert.IsTrue(completed.Wait(AsyncTimeoutMs));
+
+                    lock (orderLock)
+                        CollectionAssert.AreEqual(new[] { "first", "second", "third" }, observed);
+                }
+                finally
+                {
+                    release.Set();
+                    MessageHandler.Unregister(orderedProcessor);
+                }
+            }
+        }
+
+        [TestMethod]
+        public void Process_WithoutEligibleProcessor_RaisesUnsupportedDiagnostic()
+        {
+            var sender = new FakeSender();
+            var message = new SetStatus { Message = "unsupported" };
+            ISender reportedSender = null;
+            IMessage reportedMessage = null;
+            Action<ISender, IMessage> onUnsupported = (s, m) =>
+            {
+                reportedSender = s;
+                reportedMessage = m;
+            };
+
+            MessageHandler.UnsupportedMessageReceived += onUnsupported;
+            try
+            {
+                MessageHandler.Process(sender, message, dispatchAsync: false);
+
+                Assert.AreSame(sender, reportedSender);
+                Assert.AreSame(message, reportedMessage);
+            }
+            finally
+            {
+                MessageHandler.UnsupportedMessageReceived -= onUnsupported;
+            }
+        }
+
+        [TestMethod]
+        public void Process_WithEligibleProcessor_DoesNotRaiseUnsupportedDiagnostic()
+        {
+            var processor = new RecordingProcessor();
+            var diagnosticCount = 0;
+            Action<ISender, IMessage> onUnsupported = (s, m) => diagnosticCount++;
+
+            MessageHandler.Register(processor);
+            MessageHandler.UnsupportedMessageReceived += onUnsupported;
+            try
+            {
+                MessageHandler.Process(new FakeSender(), new SetStatus(), dispatchAsync: false);
+
+                Assert.AreEqual(0, diagnosticCount);
+            }
+            finally
+            {
+                MessageHandler.UnsupportedMessageReceived -= onUnsupported;
+                MessageHandler.Unregister(processor);
+            }
+        }
+
         private sealed class FakeSender : ISender
         {
             public int SendCount;
@@ -219,6 +302,42 @@ namespace Pulsar.Common.Tests.Messages
                 ExecutingThreadId = Thread.CurrentThread.ManagedThreadId;
                 if (_onExecute != null)
                     _onExecute();
+            }
+        }
+
+        private sealed class OrderedProcessor : IMessageProcessor
+        {
+            private readonly ManualResetEventSlim _firstStarted;
+            private readonly ManualResetEventSlim _release;
+            private readonly ManualResetEventSlim _completed;
+            private readonly List<string> _observed;
+            private readonly object _sync;
+
+            public OrderedProcessor(ManualResetEventSlim firstStarted, ManualResetEventSlim release,
+                ManualResetEventSlim completed, List<string> observed, object sync)
+            {
+                _firstStarted = firstStarted;
+                _release = release;
+                _completed = completed;
+                _observed = observed;
+                _sync = sync;
+            }
+
+            public bool CanExecute(IMessage message) => message is SetStatus;
+            public bool CanExecuteFrom(ISender sender) => true;
+
+            public void Execute(ISender sender, IMessage message)
+            {
+                var value = ((SetStatus)message).Message;
+                lock (_sync)
+                    _observed.Add(value);
+                if (value == "first")
+                {
+                    _firstStarted.Set();
+                    _release.Wait();
+                }
+                if (value == "third")
+                    _completed.Set();
             }
         }
     }

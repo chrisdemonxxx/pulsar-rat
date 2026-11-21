@@ -1,3 +1,4 @@
+using Pulsar.Client.Config;
 using System;
 using System.Diagnostics;
 using System.IO;
@@ -66,6 +67,12 @@ namespace Pulsar.Client.Setup
 
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
+
+                if (!Settings.Initialize())
+                {
+                    Environment.Exit(1);
+                    return;
+                }
 
                 Program.SaveOriginalDesktop();
 

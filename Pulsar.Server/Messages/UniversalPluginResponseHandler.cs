@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using Pulsar.Common.Messages;
 using Pulsar.Common.Messages.Other;
@@ -9,8 +10,10 @@ using Pulsar.Server.Networking;
 
 namespace Pulsar.Server.Messages
 {
-    public sealed class UniversalPluginResponseHandler : IMessageProcessor
+    public sealed class UniversalPluginResponseHandler : IMessageProcessor, IDisposable
     {
+        private const int MaxCallbacks = 1024;
+        private const int MaxHandlersPerType = 64;
         private static readonly ConcurrentDictionary<string, Action<PluginResponse>> _callbacks = new ConcurrentDictionary<string, Action<PluginResponse>>();
         private static readonly ConcurrentDictionary<string, List<Action<PluginResponse>>> _typeHandlers = new ConcurrentDictionary<string, List<Action<PluginResponse>>>();
         
@@ -45,7 +48,11 @@ namespace Pulsar.Server.Messages
             var pluginType = GetPluginType(response.PluginId);
             if (!string.IsNullOrEmpty(pluginType) && _typeHandlers.TryGetValue(pluginType, out var handlers))
             {
-                foreach (var handler in handlers)
+                Action<PluginResponse>[] snapshot;
+                lock (handlers)
+                    snapshot = handlers.ToArray();
+
+                foreach (var handler in snapshot)
                 {
                     try { handler(result); } catch { }
                 }
@@ -62,15 +69,25 @@ namespace Pulsar.Server.Messages
         public static void Register(string pluginId, Action<PluginResponse> callback)
         {
             if (string.IsNullOrEmpty(pluginId) || callback == null) return;
+            if (_callbacks.Count >= MaxCallbacks && !_callbacks.ContainsKey(pluginId)) return;
             _callbacks[pluginId] = callback;
         }
 
         public static void RegisterType(string pluginType, Action<PluginResponse> callback)
         {
             if (string.IsNullOrEmpty(pluginType) || callback == null) return;
-            _typeHandlers.AddOrUpdate(pluginType, 
+            if (_typeHandlers.Count >= MaxCallbacks && !_typeHandlers.ContainsKey(pluginType)) return;
+            _typeHandlers.AddOrUpdate(pluginType,
                 new List<Action<PluginResponse>> { callback },
-                (k, v) => { v.Add(callback); return v; });
+                (k, v) =>
+                {
+                    lock (v)
+                    {
+                        if (v.Count < MaxHandlersPerType && !v.Contains(callback))
+                            v.Add(callback);
+                    }
+                    return v;
+                });
         }
 
         public static void Unregister(string pluginId)
@@ -82,8 +99,12 @@ namespace Pulsar.Server.Messages
         {
             if (_typeHandlers.TryGetValue(pluginType, out var handlers))
             {
-                handlers.Remove(callback);
-                if (handlers.Count == 0) _typeHandlers.TryRemove(pluginType, out _);
+                lock (handlers)
+                {
+                    handlers.Remove(callback);
+                    if (handlers.Count == 0)
+                        _typeHandlers.TryRemove(pluginType, out _);
+                }
             }
         }
 
@@ -91,6 +112,12 @@ namespace Pulsar.Server.Messages
         {
             _callbacks.Clear();
             _typeHandlers.Clear();
+        }
+
+        public void Dispose()
+        {
+            Clear();
+            ResponseReceived = null;
         }
     }
 

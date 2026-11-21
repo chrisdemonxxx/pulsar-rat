@@ -1,14 +1,10 @@
-using Pulsar.Common.Enums;
 using Pulsar.Common.Messages;
-using Pulsar.Common.Messages.Administration.Actions;
 using Pulsar.Common.Messages.AdminRelay;
-using Pulsar.Common.Messages.ClientManagement;
-using Pulsar.Common.Messages.QuickCommands;
-using Pulsar.Common.Messages.UserSupport.MessageBox;
 using Pulsar.Common.Messages.Other;
 using Pulsar.Common.Networking;
 using Pulsar.Server.Models;
 using Pulsar.Server.Networking;
+using Pulsar.Server.Operations;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -30,13 +26,25 @@ namespace Pulsar.Server.Messages
     {
         private readonly Func<PulsarServer> _getServer;
         private readonly Action<string, string> _log;
+        private readonly ClientOperationService _operations;
         private readonly ConcurrentDictionary<Client, byte> _admins = new ConcurrentDictionary<Client, byte>();
+        private readonly ConcurrentDictionary<Client, int> _authenticationFailures = new ConcurrentDictionary<Client, int>();
+        private const int MaxAuthenticationFailures = 3;
+        private const int MaxRelayParameterLength = 256 * 1024;
         private int _serverEventsSubscribed;
 
-        public AdminRelayHandler(Func<PulsarServer> getServer, Action<string, string> log) : base(true)
+        public AdminRelayHandler(Func<PulsarServer> getServer, Action<string, string> log)
+            : this(getServer, log, null)
+        {
+        }
+
+        public AdminRelayHandler(Func<PulsarServer> getServer, Action<string, string> log,
+            ClientOperationService operations) : base(true)
         {
             _getServer = getServer ?? throw new ArgumentNullException(nameof(getServer));
             _log = log;
+            _operations = operations ?? new ClientOperationService(
+                () => _getServer()?.ConnectedClients, _log);
         }
 
         public override bool CanExecute(IMessage message) => message is AdminIdentification
@@ -75,7 +83,7 @@ namespace Pulsar.Server.Messages
                     Accepted = false,
                     DeniedReason = "no admin key configured on the server"
                 });
-                _log?.Invoke($"[Admin] '{client.Value?.UserAtPc}' requested admin access but no admin key is configured.", "error");
+                _log?.Invoke("[Admin] Rejected admin authentication because no key is configured.", "error");
                 return;
             }
 
@@ -84,15 +92,19 @@ namespace Pulsar.Server.Messages
 
             if (provided == null || !CryptographicOperations.FixedTimeEquals(provided, expected))
             {
+                var failures = _authenticationFailures.AddOrUpdate(client, 1, (_, count) => count + 1);
                 client.Send(new AdminIdentificationResult
                 {
                     Accepted = false,
                     DeniedReason = "invalid admin key"
                 });
-                _log?.Invoke($"[Admin] '{client.Value?.UserAtPc}' failed admin authentication.", "error");
+                _log?.Invoke("[Admin] Rejected invalid admin authentication.", "error");
+                if (failures >= MaxAuthenticationFailures)
+                    client.Disconnect();
                 return;
             }
 
+            _authenticationFailures.TryRemove(client, out _);
             _admins[client] = 1;
             EnsureServerEventsSubscribed();
 
@@ -105,13 +117,16 @@ namespace Pulsar.Server.Messages
                 Clients = GetManagedClients()
             });
 
-            _log?.Invoke($"[Admin] '{client.Value?.UserAtPc}' authenticated as admin.", "normal");
+            _log?.Invoke("[Admin] Admin client authenticated.", "normal");
         }
 
         private void Execute(Client client, GetAdminClientList message)
         {
             if (!IsAdmin(client))
-                return; // not authenticated for admin features — ignore silently
+            {
+                client.Disconnect();
+                return;
+            }
 
             client.Send(new GetAdminClientListResponse
             {
@@ -122,9 +137,14 @@ namespace Pulsar.Server.Messages
         private void Execute(Client client, DoAdminRelay message)
         {
             if (!IsAdmin(client))
+            {
+                client.Disconnect();
                 return;
+            }
 
-            if (string.IsNullOrWhiteSpace(message?.TargetId) || message.Command == AdminRelayCommand.None)
+            if (!MessageInputLimits.IsValidClientId(message?.TargetId) || message.Command == AdminRelayCommand.None ||
+                (message.Param1?.Length ?? 0) > MaxRelayParameterLength ||
+                (message.Param2?.Length ?? 0) > MaxRelayParameterLength)
             {
                 client.Send(new AdminRelayResult
                 {
@@ -147,70 +167,57 @@ namespace Pulsar.Server.Messages
                 return;
             }
 
-            bool forwarded;
+            ClientOperationResult operationResult;
             try
             {
-                forwarded = TryForwardCommand(target, message.Command, message.Param1, message.Param2);
+                operationResult = _operations.Execute(CreateOperationRequest(message), "admin relay");
             }
             catch (Exception ex)
             {
-                _log?.Invoke($"[Admin] relay to '{target.Value?.UserAtPc}' failed: {ex.Message}", "error");
-                forwarded = false;
+                _log?.Invoke($"[Admin] Relay failed with {ex.GetType().Name}.", "error");
+                operationResult = ClientOperationResult.Create(
+                    message.TargetId, ClientOperation.None, ClientOperationStatus.Failed,
+                    "operation failed");
             }
 
             client.Send(new AdminRelayResult
             {
                 TargetId = message.TargetId,
-                Accepted = forwarded,
-                Reason = forwarded ? null : "unsupported command"
+                Accepted = operationResult.Accepted,
+                Reason = operationResult.Accepted ? null : operationResult.Error ?? "unsupported command"
             });
-
-            _log?.Invoke($"[Admin] '{client.Value?.UserAtPc}' relayed {message.Command} to '{target.Value?.UserAtPc}'.", forwarded ? "normal" : "error");
         }
 
         /// <summary>
-        /// Maps the whitelisted admin command to the regular message type and sends it to the target.
+        /// Maps the wire-compatible admin command enum into the shared operation request.
         /// </summary>
-        private static bool TryForwardCommand(Client target, AdminRelayCommand command, string param1, string param2)
+        private static ClientOperationRequest CreateOperationRequest(DoAdminRelay message)
         {
-            switch (command)
+            var operation = message.Command switch
             {
-                case AdminRelayCommand.Shutdown:
-                    target.Send(new DoShutdownAction { Action = ShutdownAction.Shutdown });
-                    return true;
-                case AdminRelayCommand.Restart:
-                    target.Send(new DoShutdownAction { Action = ShutdownAction.Restart });
-                    return true;
-                case AdminRelayCommand.Standby:
-                    target.Send(new DoShutdownAction { Action = ShutdownAction.Standby });
-                    return true;
-                case AdminRelayCommand.Lockscreen:
-                    target.Send(new DoShutdownAction { Action = ShutdownAction.Lockscreen });
-                    return true;
-                case AdminRelayCommand.Reconnect:
-                    target.Send(new DoClientReconnect());
-                    return true;
-                case AdminRelayCommand.Disconnect:
-                    target.Send(new DoClientDisconnect());
-                    return true;
-                case AdminRelayCommand.Uninstall:
-                    target.Send(new DoClientUninstall());
-                    return true;
-                case AdminRelayCommand.MessageBox:
-                    target.Send(new DoShowMessageBox
-                    {
-                        Caption = string.IsNullOrEmpty(param1) ? "Pulsar" : param1,
-                        Text = param2,
-                        Button = "OK",
-                        Icon = "Information"
-                    });
-                    return !string.IsNullOrEmpty(param2);
-                case AdminRelayCommand.QuickCommand:
-                    target.Send(new DoSendQuickCommand { Command = param1, Host = param2 });
-                    return !string.IsNullOrEmpty(param1);
-                default:
-                    return false;
-            }
+                AdminRelayCommand.Shutdown => ClientOperation.Shutdown,
+                AdminRelayCommand.Restart => ClientOperation.Restart,
+                AdminRelayCommand.Standby => ClientOperation.Standby,
+                AdminRelayCommand.Lockscreen => ClientOperation.Lockscreen,
+                AdminRelayCommand.Reconnect => ClientOperation.Reconnect,
+                AdminRelayCommand.Disconnect => ClientOperation.Disconnect,
+                AdminRelayCommand.Uninstall => ClientOperation.Uninstall,
+                AdminRelayCommand.MessageBox => ClientOperation.MessageBox,
+                AdminRelayCommand.QuickCommand => ClientOperation.QuickCommand,
+                _ => ClientOperation.None
+            };
+
+            return new ClientOperationRequest
+            {
+                ClientId = message.TargetId,
+                Operation = operation,
+                Caption = string.IsNullOrEmpty(message.Param1) ? "Pulsar" : message.Param1,
+                Text = message.Param2,
+                Button = "OK",
+                Icon = "Information",
+                Command = message.Param1,
+                Host = message.Param2
+            };
         }
 
         private bool IsAdmin(Client client) => _admins.ContainsKey(client);
@@ -268,6 +275,7 @@ namespace Pulsar.Server.Messages
         private void ServerOnClientDisconnected(Client client)
         {
             bool wasAdmin = _admins.TryRemove(client, out _);
+            _authenticationFailures.TryRemove(client, out _);
             if (!wasAdmin)
             {
                 PushClientEvent(client, false);
@@ -309,6 +317,11 @@ namespace Pulsar.Server.Messages
             return bytes;
         }
 
+        private static string ShortId(string id)
+        {
+            return string.IsNullOrEmpty(id) ? "unknown client" : id.Substring(0, Math.Min(8, id.Length));
+        }
+
         public void Dispose()
         {
             Dispose(true);
@@ -327,6 +340,7 @@ namespace Pulsar.Server.Messages
             }
 
             _admins.Clear();
+            _authenticationFailures.Clear();
         }
     }
 }

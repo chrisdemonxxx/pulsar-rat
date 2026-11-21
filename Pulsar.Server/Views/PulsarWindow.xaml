@@ -1,0 +1,11 @@
+<Window x:Class="Pulsar.Server.Views.PulsarWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Style="{DynamicResource PulsarWindowStyle}"
+        Background="{DynamicResource WindowBackgroundBrush}"
+        Foreground="{DynamicResource WindowForegroundBrush}"
+        FontSize="11"
+        WindowStartupLocation="CenterOwner"
+        SnapsToDevicePixels="True">
+    <!-- Content rendered here by derived classes -->
+</Window>

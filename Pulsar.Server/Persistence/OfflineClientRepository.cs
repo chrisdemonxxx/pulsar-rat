@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using Microsoft.Data.Sqlite;
+using Pulsar.Common.Networking;
 using Pulsar.Server.Networking;
 
 namespace Pulsar.Server.Persistence
@@ -262,6 +263,45 @@ namespace Pulsar.Server.Persistence
             ";
 
             return ReadClients(command);
+        }
+
+        public static OfflineClientRecord GetClient(string clientId)
+        {
+            if (!MessageInputLimits.IsValidClientId(clientId))
+            {
+                return null;
+            }
+
+            Initialize();
+
+            using var connection = new SqliteConnection(ConnectionString);
+            connection.Open();
+
+            using var command = connection.CreateCommand();
+            command.CommandText = @"
+                SELECT
+                    ClientId,
+                    Username,
+                    PcName,
+                    UserAtPc,
+                    PublicIP,
+                    Tag,
+                    OperatingSystem,
+                    Version,
+                    Country,
+                    CountryCode,
+                    AccountType,
+                    ImageIndex,
+                    FirstSeenUtc,
+                    LastSeenUtc,
+                    IsOnline
+                FROM Clients
+                WHERE ClientId = $id
+                LIMIT 1;
+            ";
+
+            AddParameter(command, "$id", clientId);
+            return ReadClients(command).FirstOrDefault();
         }
 
         public static void ClearOfflineClients()

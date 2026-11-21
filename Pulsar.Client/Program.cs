@@ -1,4 +1,4 @@
-﻿using Pulsar.Client.Config;
+using Pulsar.Client.Config;
 using Pulsar.Client.IO;
 using Pulsar.Client.Setup;
 using System;
@@ -24,52 +24,50 @@ namespace Pulsar.Client
         [STAThread]
         private static void Main(string[] args)
         {
-            string logFile = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "pulsar_client_main.log");
+
             try
             {
-                try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] MAIN: Entry point reached\r\n"); } catch { }
+
                 
                 if (IsServiceMode(args))
                 {
-                    try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] MAIN: Running as service\r\n"); } catch { }
+
                     PulsarService.RunService();
                     return;
                 }
 
-                try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] MAIN: Setting TLS 1.2\r\n"); } catch { }
                 // enable TLS 1.2
                 ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
 
-                try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] MAIN: Setting DPI aware\r\n"); } catch { }
                 SetProcessDPIAware();
 
-                try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] MAIN: Setting unhandled exception mode\r\n"); } catch { }
+                if (!Settings.Initialize())
+                {
+                    Environment.Exit(1);
+                    return;
+                }
+
                 // Set the unhandled exception mode to force all Windows Forms errors to go through our handler
                 Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
 
-                try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] MAIN: Enabling visual styles\r\n"); } catch { }
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
 
-                try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] MAIN: Saving original desktop\r\n"); } catch { }
                 SaveOriginalDesktop();
 
-                try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] MAIN: Creating PulsarApplication\r\n"); } catch { }
                 var app = new PulsarApplication();
-                
-                try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] MAIN: Starting Application.Run\r\n"); } catch { }
+
                 Application.Run(app);
-                
-                try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] MAIN: Application.Run completed\r\n"); } catch { }
+
             }
             catch (Exception ex)
             {
-                string logFile2 = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "pulsar_client_main.log");
-                try { System.IO.File.AppendAllText(logFile2, $"[{System.DateTime.Now:HH:mm:ss.fff}] MAIN: EXCEPTION: {ex.GetType().Name}: {ex.Message}\r\n"); } catch { }
-                try { System.IO.File.AppendAllText(logFile2, $"[{System.DateTime.Now:HH:mm:ss.fff}]   Stack: {ex.StackTrace}\r\n"); } catch { }
+
+
+
                 if (ex.InnerException != null)
                 {
-                    try { System.IO.File.AppendAllText(logFile2, $"[{System.DateTime.Now:HH:mm:ss.fff}]   Inner: {ex.InnerException.GetType().Name}: {ex.InnerException.Message}\r\n"); } catch { }
+
                 }
                 Environment.Exit(99);
             }

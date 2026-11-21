@@ -172,71 +172,70 @@ namespace Pulsar.Server.Networking
 
         public void Listen(int port, bool ipv6 = false, bool useUPnP = false)
         {
-            _port = (ushort)port;
-            _listeningPorts = new List<ushort> { (ushort)port };
-
-            if (_listening)
-            {
-                return;
-            }
-
-            if (_listenSocket != null)
-            {
-                Disconnect();
-            }
-
-            AddressFamily addressFamily = ipv6 ? AddressFamily.InterNetworkV6 : AddressFamily.InterNetwork;
-            _listenSocket = new Socket(addressFamily, SocketType.Stream, ProtocolType.Tcp);
-            _listenSocket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-
-            IPAddress listenAddress = ipv6 ? IPAddress.IPv6Any : IPAddress.Any;
-            _listenSocket.Bind(new IPEndPoint(listenAddress, _port));
-            _listenSocket.Listen(int.MaxValue);
-
-            _acceptEventArgs = new SocketAsyncEventArgs();
-            _acceptEventArgs.Completed += AcceptCompleted;
-
-            // FIX: Set _listening BEFORE calling AcceptAsync so it doesn't return early!
-            _listening = true;
-            AcceptAsync();
-
-            OnServerState(_listening, _port);
+            ListenMany(new[] { (ushort)port }, ipv6, useUPnP);
         }
 
         public void ListenMany(IEnumerable<ushort> ports, bool ipv6 = false, bool useUPnP = false)
         {
-            var portList = ports.ToList();
+            var portList = ports?.Where(port => port != 0).Distinct().ToList() ?? new List<ushort>();
             if (portList.Count == 0) return;
-
-            _listeningPorts = new List<ushort>(portList);
-            _port = portList[0];
 
             if (_listening)
             {
                 return;
             }
 
-            if (_listenSocket != null)
+            if (_listenSockets.Count > 0 || _acceptEventArgs.Count > 0)
             {
                 Disconnect();
             }
 
-            // Listen on all ports (we'll use the first one as the main port)
-            AddressFamily addressFamily = ipv6 ? AddressFamily.InterNetworkV6 : AddressFamily.InterNetwork;
-            _listenSocket = new Socket(addressFamily, SocketType.Stream, ProtocolType.Tcp);
-            _listenSocket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+            ProcessingDisconnect = false;
+            var sockets = new List<Socket>();
+            var acceptEventArgs = new List<SocketAsyncEventArgs>();
+            try
+            {
+                AddressFamily addressFamily = ipv6 ? AddressFamily.InterNetworkV6 : AddressFamily.InterNetwork;
+                IPAddress listenAddress = ipv6 ? IPAddress.IPv6Any : IPAddress.Any;
 
-            IPAddress listenAddress = ipv6 ? IPAddress.IPv6Any : IPAddress.Any;
-            _listenSocket.Bind(new IPEndPoint(listenAddress, _port));
-            _listenSocket.Listen(int.MaxValue);
+                foreach (var port in portList)
+                {
+                    var socket = new Socket(addressFamily, SocketType.Stream, ProtocolType.Tcp);
+                    socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+                    socket.Bind(new IPEndPoint(listenAddress, port));
+                    socket.Listen(1024);
+                    sockets.Add(socket);
 
-            _acceptEventArgs = new SocketAsyncEventArgs();
-            _acceptEventArgs.Completed += AcceptCompleted;
+                    var eventArgs = new SocketAsyncEventArgs { UserToken = socket };
+                    eventArgs.Completed += AcceptCompleted;
+                    acceptEventArgs.Add(eventArgs);
+                }
 
-            AcceptAsync();
+                _listenSockets.AddRange(sockets);
+                _acceptEventArgs.AddRange(acceptEventArgs);
+                _listeningPorts = new List<ushort>(portList);
+                _port = portList[0];
+                _listening = true;
 
-            _listening = true;
-            OnServerState(_listening, _port);
+                for (int i = 0; i < sockets.Count; i++)
+                    AcceptAsync(sockets[i], acceptEventArgs[i]);
+
+                OnServerState(_listening, _port);
+            }
+            catch
+            {
+                foreach (var eventArgs in acceptEventArgs)
+                {
+                    eventArgs.Completed -= AcceptCompleted;
+                    eventArgs.Dispose();
+                }
+                foreach (var socket in sockets)
+                    socket.Dispose();
+                _listenSockets.Clear();
+                _acceptEventArgs.Clear();
+                _listening = false;
+                throw;
+            }
         }
 
         public ushort[] GetListeningPorts()
@@ -251,39 +250,53 @@ namespace Pulsar.Server.Networking
             _listening = false;
             OnServerState(_listening, _port);
 
-            if (_acceptEventArgs != null)
+            var acceptEventArgs = _acceptEventArgs.ToArray();
+            _acceptEventArgs.Clear();
+            foreach (var eventArgs in acceptEventArgs)
             {
-                _acceptEventArgs.Completed -= AcceptCompleted;
-                _acceptEventArgs.Dispose();
+                eventArgs.Completed -= AcceptCompleted;
+                eventArgs.Dispose();
             }
 
-            if (_listenSocket != null)
-            {
-                _listenSocket.Close();
-                _listenSocket = null;
-            }
+            var sockets = _listenSockets.ToArray();
+            _listenSockets.Clear();
+            foreach (var socket in sockets)
+                socket.Dispose();
 
+            Client[] clients;
             lock (_clientsLock)
             {
-                foreach (var client in _clients)
-                {
-                    client.Disconnect();
-                }
+                clients = _clients.ToArray();
+                _clients.Clear();
+            }
+
+            foreach (var client in clients)
+            {
+                DetachClient(client);
+                client.Disconnect();
             }
         }
 
         protected bool ProcessingDisconnect { get; set; }
 
-        private void AcceptAsync()
+        private void AcceptAsync(Socket socket, SocketAsyncEventArgs eventArgs)
         {
-            if (!_listening) return;
+            if (!_listening || socket == null || eventArgs == null) return;
 
-            _acceptEventArgs.AcceptSocket = null;
-            bool willRaiseEvent = _listenSocket.AcceptAsync(_acceptEventArgs);
+            eventArgs.AcceptSocket = null;
+            bool willRaiseEvent;
+            try
+            {
+                willRaiseEvent = socket.AcceptAsync(eventArgs);
+            }
+            catch (ObjectDisposedException)
+            {
+                return;
+            }
 
             if (!willRaiseEvent)
             {
-                AcceptCompleted(_listenSocket, _acceptEventArgs);
+                AcceptCompleted(socket, eventArgs);
             }
         }
 
@@ -297,13 +310,29 @@ namespace Pulsar.Server.Networking
                 try
                 {
                     Socket clientSocket = e.AcceptSocket;
+                    if (ClientsCount >= MaxConnections)
+                    {
+                        clientSocket.Close();
+                        var limitSocket = e.UserToken as Socket;
+                        if (limitSocket != null)
+                            AcceptAsync(limitSocket, e);
+                        return;
+                    }
+
                     clientSocket.SetKeepAliveEx(KeepAliveInterval, KeepAliveTime);
                     clientSocket.NoDelay = true;
 
                     var networkStream = new NetworkStream(clientSocket, true);
                     var client = new Client(networkStream, (IPEndPoint)clientSocket.RemoteEndPoint, ServerCertificate);
-                    AddClient(client);
-                    OnClientState(client, true);
+                    if (client.Connected)
+                    {
+                        AddClient(client);
+                        OnClientState(client, true);
+                    }
+                    else
+                    {
+                        client.Disconnect();
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -316,16 +345,19 @@ namespace Pulsar.Server.Networking
                 }
             }
 
-            AcceptAsync();
+            var listeningSocket = e.UserToken as Socket;
+            if (listeningSocket != null)
+                AcceptAsync(listeningSocket, e);
         }
 
         private const int KeepAliveInterval = 10000;
         private const int KeepAliveTime = 10000;
+        private static readonly int MaxConnections = ReadLimit("PULSAR_MAX_SERVER_CONNECTIONS", 512, 1, 16384);
 
         private ushort _port;
         private bool _listening;
-        private Socket _listenSocket;
-        private SocketAsyncEventArgs _acceptEventArgs;
+        private readonly List<Socket> _listenSockets = new List<Socket>();
+        private readonly List<SocketAsyncEventArgs> _acceptEventArgs = new List<SocketAsyncEventArgs>();
         private List<ushort> _listeningPorts = new List<ushort>();
         private readonly object _clientsLock = new object();
         private readonly List<Client> _clients = new List<Client>();
@@ -338,9 +370,9 @@ namespace Pulsar.Server.Networking
         {
             lock (_clientsLock)
             {
-                client.ClientState += (c, connected) => OnClientState(c, connected);
-                client.ClientRead += (c, message, length) => OnClientRead(c, message);
-                client.ClientFail += (c, ex) => OnClientFail(c, ex);
+                client.ClientState += OnClientConnectionState;
+                client.ClientRead += OnClientReadMessage;
+                client.ClientFail += OnClientFailure;
 
                 _clients.Add(client);
             }
@@ -355,12 +387,53 @@ namespace Pulsar.Server.Networking
         /// </summary>
         private void RemoveClient(Client client)
         {
-            if (ProcessingDisconnect) return;
-
+            bool removed;
             lock (_clientsLock)
             {
-                _clients.Remove(client);
+                removed = _clients.Remove(client);
             }
+
+            if (!removed)
+                return;
+
+            DetachClient(client);
+            OnClientDisconnected(client);
+        }
+
+        private void OnClientConnectionState(Client client, bool connected)
+        {
+            if (!connected)
+                RemoveClient(client);
+
+            OnClientState(client, connected);
+        }
+
+        private void OnClientFailure(Client client, Exception ex)
+        {
+            OnClientFail(client, ex);
+            client.Disconnect();
+            RemoveClient(client);
+        }
+
+        private void OnClientReadMessage(Client client, IMessage message, int length)
+        {
+            OnClientRead(client, message);
+        }
+
+        private void DetachClient(Client client)
+        {
+            if (client == null)
+                return;
+
+            client.ClientState -= OnClientConnectionState;
+            client.ClientRead -= OnClientReadMessage;
+            client.ClientFail -= OnClientFailure;
+        }
+
+        private static int ReadLimit(string name, int fallback, int minimum, int maximum)
+        {
+            var text = Environment.GetEnvironmentVariable(name);
+            return int.TryParse(text, out var value) && value >= minimum && value <= maximum ? value : fallback;
         }
     }
 }

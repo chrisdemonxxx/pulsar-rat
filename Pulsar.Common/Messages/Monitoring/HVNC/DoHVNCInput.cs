@@ -15,5 +15,8 @@ namespace Pulsar.Common.Messages.Monitoring.HVNC
 
         [Key(3)]
         public int lParam { get; set; }
+
+        [Key(4)]
+        public string SessionId { get; set; } = string.Empty;
     }
 }

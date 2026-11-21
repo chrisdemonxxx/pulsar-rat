@@ -1,40 +1,91 @@
 # Pulsar Roadmap
 
-## Web API
-A web API (e.g. REST-like) allows to interact with the clients in more flexible ways and can be used to build a web interface for Pulsar.
-✅ Implemented (Oct 2026): `Pulsar.Server/Networking/WebApi/WebApiServer.cs` — Kestrel-hosted REST API inside the server process. Enable in Settings → Web API (port + API key; refuses to start without a key). Endpoints under `/api`: version, stats, clients (list/detail), per-client actions (shutdown/restart/standby/lockscreen/reconnect/disconnect/uninstall), quickcommand, messagebox. Auth: `X-Api-Key` header, constant-time compared. Smoke-tested end-to-end via `tools/webapi-smoke`.
-✅ v2 (Oct 2026): live event stream (`GET /api/events`, SSE: client connect/disconnect + server log lines + heartbeat), recent-log endpoint (`/api/log`), known/offline clients from the SQLite repository (`/api/knownclients`, `/api/offline`), autotasks listing (`/api/autotasks`), and an embedded dark-theme web dashboard at `/` (key prompt in-browser; all data still requires the key). Smoke: 15/15.
+This file tracks implemented source capabilities and remaining work. "Implemented" means the current source contains the feature; it does not assert that a binary was deployed or exercised in a particular environment. See `AGENTS.md` and `PROTOCOL.md` for the verified build and wire contracts.
 
-## Transparent communication protocol
-To open up the way for Pulsar clients in different programming languages the communication protocol needs to be clearly specified and documented.
-✅ Implemented (Oct 2026): see `PROTOCOL.md` — wire-exact spec (framing, MessagePack envelope, AES-256-GCM security envelope, handshake, message inventory).
+## Implemented
 
-## Cross-platform support
-A long-term goal is to support operating systems such as MacOS and Linux. The new .NET Core framework will help achieve this goal.
+### Embedded Web API
 
-## Command line (CLI) version of the server
-It should be possible to use the server as a simple CLI tool to accept and forward (proxy) connections to other servers.
-✅ Implemented (Oct 2026): `Pulsar.Relay` — dependency-free CLI TCP relay (accept + round-robin forward to upstream servers, byte-pipe, no protocol parsing).
+`Pulsar.Server/Networking/WebApi/WebApiServer.cs` hosts a .NET 9 ASP.NET Core/Kestrel service in the server process. It serves:
 
-## GUI overhaul
-The GUI needs to be reworked in a more modern way, such as WPF or a web-based interface. WPF as GUI framework would drastically improve rendering performance of the remote desktop with the hardware accelerated rendering, similar to a web-based GUI depending on the used browser.
+- version, stats, connected-client, persisted-client, offline-client, auto-task, and recent-log queries;
+- a bounded SSE stream for connect/disconnect/log/heartbeat events;
+- validated client operations through the shared `ClientOperationService`;
+- an embedded dashboard shell.
 
-## Allow different types of clients (permissioned clients)
-Allow clients with higher privileges (i.e. ability to administrate other lower privileged clients) connect to the server. This change would allow administrators to manage clients from their own computers with a lightweight client without having to run the server.
-✅ Implemented v1 (Oct 2026): `Pulsar.AdminClient` (net9 console) authenticates with the server's configured admin key (`adminClientKey` in settings, FrmSettings → Admin key; empty = feature off), then lists managed clients, follows live connect/disconnect events and relays whitelisted commands (shutdown/restart/standby/lockscreen/reconnect/disconnect/uninstall/messagebox/quickcommand) through the server. Wire-additive only (8 new message types, zero changes to existing ones) — old clients/servers interop. Admin relay: `Pulsar.Server/Messages/AdminRelayHandler.cs`. Smoke: `tools/admin-relay-smoke` (7/7 live, real server + real exe).
+The service is plain HTTP on the configured port. `/`, `/dashboard`, and `/favicon.ico` contain no client data. Every other path requires `X-Api-Key`; the server refuses to start with an empty configured key. Settings require a process restart. A standalone `tools/webapi-smoke` check is defined by the CI workflows.
 
-## Allow client installation as Windows service
-Currently the client is installed on a per-user basis and this makes it unflexible to remotly manage the machine when the user is not logged in. it also requires the client to be installed for every account who uses the machine. Machines which are used by multiple users would greatly benefit when Pulsar could be run as a Windows service.
-✅ Implemented (Oct 2026): builder flag "Windows Service" (`INSTALLSERVICE`) registers an auto-start service via sc.exe pointing at the installed copy with `-service`; `Pulsar.Client/Setup/PulsarService.cs` runs the client headless in session 0. Requires an elevated install.
+### Transparent protocol documentation
 
-## Basic client GUI
-Add a basic GUI to the client to allow the user at any time to check the status if a specific feature is active. Additionally it can show a notification when the client gets installed or when someone requests permission to use remote desktop (similar to teamviewer).
-✅ Implemented v1 (Oct 2026): builder flag "Client GUI" (`SHOWCLIENTGUI`, default off) — tray icon with status window (connection, hosts, tag, version, keylogger, install path), connect/disconnect notifications.
-✅ v2 (Oct 2026): remote-desktop consent prompt — on a user-facing build, an operator's session start triggers a topmost Allow/Deny dialog on the client (`Pulsar.Client/GUI/FrmRemoteDesktopPermissionPrompt.cs`, 30s auto-deny so unattended machines never stream without consent); mid-session reconfigures do not re-prompt. Denial notifies the operator via the wire-additive `DoRemoteDesktopPermissionResponse` (old servers drop it silently — no migration needed).
+`PROTOCOL.md` describes the current framing, MessagePack envelope, AES message envelope, handshake, limits, handler registration, correlation behavior, and compatibility constraints.
 
+The protocol does not carry a numeric negotiation field. The human-readable client version is currently sourced from `Pulsar.Common.ProtocolVersion.Current`; matching that string alone does not prove wire compatibility.
 
-# KDOT NOTES
+### CLI relay
 
-## Password Recovery
-Add Browser Scraping so I don't have to have predefined paths for each file.
-✅ Implemented (Oct 2026): `Recovery/Crawler/Crawl.cs` crawls `%LocalAppData%`/`%AppData%` depth-3 for both `User Data`-layout and flat Opera-style Chromium profiles — no predefined paths needed.
+`Pulsar.Relay` provides a `net9.0` TCP relay with:
+
+- one or more upstreams selected round-robin with failover;
+- bounded active connections and configurable idle timeout;
+- bidirectional byte piping with no MessagePack or AES parsing;
+- graceful Ctrl+C shutdown and connection counters.
+
+The relay does not authenticate or terminate the end-to-end message envelope.
+
+### Permissioned admin clients
+
+`Pulsar.AdminClient` is a `net9.0-windows` console client. It completes the regular identification handshake, authenticates with the configured admin key, lists managed clients, consumes live client events, and relays a whitelist of existing operations.
+
+The server excludes authenticated admin connections from the managed-client list, bounds relay parameters, disconnects unauthenticated admin requests, and disconnects after three failed key attempts. Admin message types are additive, but an older server that cannot decode them is not compatible with an admin client.
+
+### Client installation as a Windows service
+
+The builder's `INSTALLSERVICE` option registers the installed client with `sc.exe` and launches it with `-service`. `PulsarService` starts the normal WinForms loop on an STA service thread. Installation requires elevation; session-0 behavior has no implication about interactive UI availability.
+
+### Basic client GUI and remote-desktop consent
+
+`SHOWCLIENTGUI` gates a tray/status UI. The same option also gates the consent path for a fresh remote-desktop session. The consent dialog times out to denial. Mid-session reconfiguration does not ask again.
+
+The consent response is a distinct message type. Treat compatibility as receiver-dependent: an old peer that cannot decode the type will fail the receive path rather than transparently ignoring it.
+
+### Generated-client validation
+
+The client builder now validates the exact settings slot layout and protocol version, reads the final entry point after transformations, quotes Donut arguments atomically, and emits an adjacent manifest with hashes and non-secret build metadata. This work is enforced by builder compatibility tests and CI-generated-stub checks.
+
+## Partially implemented / environment-dependent
+
+### GUI modernization
+
+Remote desktop rendering already uses the WPF `ElementHost` path, but the rest of the operator UI remains WinForms/WPF mixed. A complete UI overhaul is still open.
+
+### HVNC
+
+HVNC framing, controls, and capture are present, but process/browser behavior depends on:
+
+- the generated x64 `HVNCInjection.x64.dll`;
+- Visual Studio C++ build tooling;
+- target process architecture, browser version, profile layout, and local Windows controls.
+
+The source has no verified fallback for a missing or incompatible native DLL. Native artifact creation is covered separately in CI; it is not proof of end-to-end injection on every target.
+
+### Donut shellcode output
+
+`ReleaseWithDonut` builds the submodule with Visual Studio 2022 C++ tools and copies `donut.exe`. The builder uses the final transformed managed entry point and supports paths with spaces. Donut generation is a native-tool integration; successful creation of a `.bin` is not itself evidence that the payload ran successfully in a target process.
+
+### Browser profile discovery
+
+The recovery crawler can discover Chromium-derived profile layouts under `%LocalAppData%` and `%AppData%` without relying only on a fixed path list. Application updates and browser-specific storage changes can still make individual recovery behavior environment-dependent.
+
+## Still open
+
+### Cross-platform support
+
+The client, server, admin console, UI, service, native injection, and many features depend on Windows APIs. The relay is cross-platform-capable as a .NET console application, but it does not make the full project cross-platform.
+
+### Broader protocol negotiation
+
+The current protocol has exact CLR type-name dispatch and no capability negotiation or numeric version handshake. Future work could add an explicitly negotiated capability envelope, but that would be a new migration boundary.
+
+### Long-running runtime verification
+
+The repository defines repeatable unit and local smoke commands plus CI jobs, but no documentation should substitute those checks for deployment-specific soak, lifecycle, restart, and native-injection tests.

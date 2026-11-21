@@ -21,6 +21,11 @@ namespace Pulsar.Server.Messages
     {
         public bool IsStarted { get; set; }
 
+        public bool IsForClient(Client client)
+        {
+            return client != null && _client != null && ReferenceEquals(_client, client);
+        }
+
         private readonly object _syncLock = new object();
         private readonly PictureBox _box;
         private readonly Client _client;

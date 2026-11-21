@@ -35,7 +35,10 @@ namespace Pulsar.Common.Networking
                 // Standard resolver for primitive types
                 StandardResolver.Instance
             ))
-            .WithCompression(MessagePackCompression.Lz4BlockArray); // Add compression for better performance
+            .WithCompression(MessagePackCompression.Lz4BlockArray)
+            .WithSecurity(MessagePackSecurity.UntrustedData
+                .WithMaximumObjectGraphDepth(MessageInputLimits.MaxObjectDepth)
+                .WithMaximumDecompressedSize(MessageInputLimits.MaxDecompressedBytes));
 
         /// <summary>
         /// Serializes an IMessage object to MessagePack binary format with type information
@@ -49,6 +52,8 @@ namespace Pulsar.Common.Networking
 
             try
             {
+                MessageInputLimits.ValidateMessage(message);
+
                 // Create a wrapper that includes type information for polymorphic deserialization
                 var messageType = message.GetType();
                 var typeName = GetTypeName(messageType);
@@ -62,7 +67,9 @@ namespace Pulsar.Common.Networking
                     Data = messageData
                 };
 
-                return MessagePackSerializer.Serialize(wrapper, _options);
+                var serialized = MessagePackSerializer.Serialize(wrapper, _options);
+                MessageInputLimits.ValidateFrameLength(serialized.Length);
+                return serialized;
             }
             catch (Exception ex)
             {
@@ -82,9 +89,14 @@ namespace Pulsar.Common.Networking
 
             try
             {
+                MessageInputLimits.ValidateFrameLength(data.Length);
+
                 // Deserialize the wrapper to get type information
                 var wrapper = MessagePackSerializer.Deserialize<MessageWrapper>(data, _options);
-                
+                if (string.IsNullOrEmpty(wrapper.TypeName) || wrapper.TypeName.Length > MessageInputLimits.MaxTypeNameLength ||
+                    wrapper.Data == null || wrapper.Data.Length > MessageInputLimits.MaxFrameBytes)
+                    throw new InvalidOperationException("Invalid message wrapper.");
+
                 // Get the actual type from our cache
                 var messageType = GetTypeFromName(wrapper.TypeName);
                 if (messageType == null)
@@ -93,7 +105,11 @@ namespace Pulsar.Common.Networking
                 }
 
                 // Deserialize the actual message data
-                return (IMessage)MessagePackSerializer.Deserialize(messageType, wrapper.Data, _options);
+                var result = MessagePackSerializer.Deserialize(messageType, wrapper.Data, _options) as IMessage;
+                if (result == null)
+                    throw new InvalidOperationException("Decoded message is invalid.");
+                MessageInputLimits.ValidateMessage(result);
+                return result;
             }
             catch (Exception ex)
             {

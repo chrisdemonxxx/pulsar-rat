@@ -1,0 +1,26 @@
+{
+  "darkMode": true,
+  "hideFromScreenCapture": false,
+  "discordRPC": false,
+  "listenPort": 4782,
+  "ipv6Support": false,
+  "autoListen": true,
+  "eventLog": false,
+  "telegramNotifications": false,
+  "showPopup": false,
+  "useUPnP": false,
+  "showToolTip": false,
+  "enableNoIPUpdater": false,
+  "telegramChatID": "",
+  "telegramBotToken": "",
+  "saveFormat": "APP - URL - USER:PASS",
+  "reverseProxyPort": 3128,
+  "ListenPorts": [
+    4783
+  ],
+  "showCountryGroups": true,
+  "webApiEnabled": false,
+  "webApiPort": 8087,
+  "webApiKey": "",
+  "adminClientKey": ""
+}

