@@ -1,13 +1,16 @@
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
-    <!-- Merge all style libraries -->
+    <!-- Merge default theme and all style libraries using assembly-qualified pack URIs
+         so resources resolve reliably both under WinForms hosting and headless tests. -->
     <ResourceDictionary.MergedDictionaries>
-        <ResourceDictionary Source="pack://application:,,,/Resources/Styles/Windows.xaml" />
-        <ResourceDictionary Source="pack://application:,,,/Resources/Styles/Buttons.xaml" />
-        <ResourceDictionary Source="pack://application:,,,/Resources/Styles/TextBoxes.xaml" />
-        <ResourceDictionary Source="pack://application:,,,/Resources/Styles/DataGrids.xaml" />
-        <ResourceDictionary Source="pack://application:,,,/Resources/Themes/DarkTheme.xaml" />
+        <ResourceDictionary Source="pack://application:,,,/Pulsar;component/Resources/Themes/DarkTheme.xaml" />
+        <ResourceDictionary Source="pack://application:,,,/Pulsar;component/Resources/Styles/Windows.xaml" />
+        <ResourceDictionary Source="pack://application:,,,/Pulsar;component/Resources/Styles/Buttons.xaml" />
+        <ResourceDictionary Source="pack://application:,,,/Pulsar;component/Resources/Styles/Cards.xaml" />
+        <ResourceDictionary Source="pack://application:,,,/Pulsar;component/Resources/Styles/Menus.xaml" />
+        <ResourceDictionary Source="pack://application:,,,/Pulsar;component/Resources/Styles/TextBoxes.xaml" />
+        <ResourceDictionary Source="pack://application:,,,/Pulsar;component/Resources/Styles/DataGrids.xaml" />
     </ResourceDictionary.MergedDictionaries>
 
 </ResourceDictionary>

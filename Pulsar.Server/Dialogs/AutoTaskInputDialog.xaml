@@ -1,0 +1,74 @@
+<Window x:Class="Pulsar.Server.Dialogs.AutoTaskInputDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Add Auto Task"
+        Width="460"
+        SizeToContent="Height"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False"
+        Background="{DynamicResource WindowBackgroundBrush}"
+        Foreground="{DynamicResource WindowForegroundBrush}"
+        FontFamily="Segoe UI"
+        FontSize="12"
+        SnapsToDevicePixels="True">
+    <Window.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="pack://application:,,,/Pulsar;component/Resources/Styles/Generic.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Window.Resources>
+
+    <Border Padding="20"
+            Background="{DynamicResource WindowBackgroundBrush}"
+            BorderBrush="{DynamicResource BorderBrush}"
+            BorderThickness="1">
+        <StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                <TextBlock Text="⚙️" FontSize="18" Margin="0,0,8,0" VerticalAlignment="Center" />
+                <TextBlock Text="Add Auto Task" FontSize="15" FontWeight="Bold" VerticalAlignment="Center" />
+            </StackPanel>
+
+            <TextBlock Text="Task Action" FontWeight="SemiBold" Margin="0,0,0,4" Foreground="{DynamicResource TextSecondaryBrush}" />
+            <ComboBox x:Name="TitleComboBox" IsEditable="True" SelectedIndex="0" Padding="6,4" Margin="0,0,0,10" TextBoxBase.TextChanged="Input_Changed" SelectionChanged="TitleComboBox_SelectionChanged">
+                <ComboBoxItem Content="Execute Command" />
+                <ComboBoxItem Content="Show Messagebox" />
+                <ComboBoxItem Content="Disconnect" />
+                <ComboBoxItem Content="Reconnect" />
+                <ComboBoxItem Content="Lockscreen" />
+                <ComboBoxItem Content="Restart" />
+                <ComboBoxItem Content="Shutdown" />
+                <ComboBoxItem Content="Standby" />
+            </ComboBox>
+
+            <TextBlock Text="Parameter 1 (Caption / Command)" FontWeight="SemiBold" Margin="0,0,0,4" Foreground="{DynamicResource TextSecondaryBrush}" />
+            <TextBox x:Name="Param1TextBox" Margin="0,0,0,10" />
+
+            <TextBlock Text="Parameter 2 (Text / Host)" FontWeight="SemiBold" Margin="0,0,0,4" Foreground="{DynamicResource TextSecondaryBrush}" />
+            <TextBox x:Name="Param2TextBox" Margin="0,0,0,10" />
+
+            <TextBlock Text="Execution Mode" FontWeight="SemiBold" Margin="0,0,0,4" Foreground="{DynamicResource TextSecondaryBrush}" />
+            <ComboBox x:Name="ExecutionModeComboBox" SelectedIndex="0" Padding="6,4" Margin="0,0,0,16">
+                <ComboBoxItem Content="OncePerClient" />
+                <ComboBoxItem Content="EveryConnection" />
+            </ComboBox>
+
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button Content="Cancel"
+                        IsCancel="True"
+                        MinWidth="92"
+                        Margin="0,0,8,0"
+                        Style="{StaticResource SecondaryCompactButtonStyle}"
+                        Click="CancelButton_Click" />
+                <Button x:Name="SaveButton"
+                        Content="Add Task"
+                        IsDefault="True"
+                        MinWidth="112"
+                        Margin="0"
+                        Style="{StaticResource ToolLaunchActionButtonStyle}"
+                        Click="SaveButton_Click" />
+            </StackPanel>
+        </StackPanel>
+    </Border>
+</Window>

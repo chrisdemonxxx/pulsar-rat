@@ -1,0 +1,132 @@
+<Window x:Class="Pulsar.Server.Dialogs.ConfirmationDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Confirm System Control"
+        Width="440"
+        SizeToContent="Height"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False"
+        Background="{DynamicResource WindowBackgroundBrush}"
+        Foreground="{DynamicResource WindowForegroundBrush}"
+        FontFamily="Segoe UI"
+        FontSize="12"
+        SnapsToDevicePixels="True">
+    <Window.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="pack://application:,,,/Pulsar;component/Resources/Styles/Generic.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Window.Resources>
+
+    <Border Padding="20"
+            Background="{DynamicResource WindowBackgroundBrush}"
+            BorderBrush="{DynamicResource SystemControlGlassBorder}"
+            BorderThickness="1">
+        <StackPanel>
+            <!-- Header & Risk Pill -->
+            <Grid Margin="0,0,0,12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Column="0"
+                           Text="⚠️"
+                           FontSize="20"
+                           VerticalAlignment="Center"
+                           Margin="0,0,10,0" />
+
+                <TextBlock x:Name="TitleTextBlock"
+                           Grid.Column="1"
+                           Text="Confirm System Control"
+                           FontSize="15"
+                           FontWeight="Bold"
+                           VerticalAlignment="Center"
+                           Foreground="{DynamicResource WindowForegroundBrush}" />
+
+                <Border x:Name="RiskBadgeBorder"
+                        Grid.Column="2"
+                        CornerRadius="4"
+                        Padding="8,3"
+                        VerticalAlignment="Center"
+                        Background="#33EF4444"
+                        BorderBrush="#99EF4444"
+                        BorderThickness="1">
+                    <TextBlock x:Name="RiskBadgeText"
+                               Text="CRITICAL"
+                               FontSize="10"
+                               FontWeight="Bold"
+                               Foreground="#FCA5A5" />
+                </Border>
+            </Grid>
+
+            <!-- Summary Question -->
+            <TextBlock x:Name="PromptTextBlock"
+                       Text="Are you sure you want to run this operation?"
+                       TextWrapping="Wrap"
+                       FontSize="12.5"
+                       Margin="0,0,0,14"
+                       Foreground="{DynamicResource WindowForegroundBrush}" />
+
+            <!-- Client Context Glass Box -->
+            <Border Background="{DynamicResource SystemControlGlassBackground}"
+                    BorderBrush="{DynamicResource SystemControlGlassBorder}"
+                    BorderThickness="1"
+                    CornerRadius="8"
+                    Padding="12"
+                    Margin="0,0,0,14">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="105" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Grid.Row="0" Grid.Column="0" Text="Target Client:" FontWeight="SemiBold" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,6" />
+                    <TextBlock x:Name="ClientTextBlock" Grid.Row="0" Grid.Column="1" Text="—" TextWrapping="Wrap" Foreground="{DynamicResource WindowForegroundBrush}" Margin="0,0,0,6" />
+
+                    <TextBlock Grid.Row="1" Grid.Column="0" Text="Action:" FontWeight="SemiBold" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,6" />
+                    <TextBlock x:Name="ActionTextBlock" Grid.Row="1" Grid.Column="1" Text="—" FontWeight="Bold" Foreground="{DynamicResource SystemControlAccentBrush}" Margin="0,0,0,6" />
+
+                    <TextBlock Grid.Row="2" Grid.Column="0" Text="Impact:" FontWeight="SemiBold" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,6" />
+                    <TextBlock x:Name="ConsequenceTextBlock" Grid.Row="2" Grid.Column="1" Text="—" TextWrapping="Wrap" Foreground="{DynamicResource WindowForegroundBrush}" Margin="0,0,0,6" />
+
+                    <TextBlock Grid.Row="3" Grid.Column="0" Text="Recoverable:" FontWeight="SemiBold" Foreground="{DynamicResource TextSecondaryBrush}" />
+                    <TextBlock x:Name="RecoverabilityTextBlock" Grid.Row="3" Grid.Column="1" Text="—" TextWrapping="Wrap" Foreground="{DynamicResource WindowForegroundBrush}" />
+                </Grid>
+            </Border>
+
+            <!-- Optional Session Suppression (Hidden for CRITICAL operations) -->
+            <CheckBox x:Name="DontAskAgainCheckBox"
+                      Content="Don't ask again for this action during this session"
+                      Foreground="{DynamicResource TextSecondaryBrush}"
+                      Margin="0,0,0,16"
+                      Visibility="Collapsed" />
+
+            <!-- Dialog Actions -->
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button x:Name="CancelButton"
+                        Content="Cancel"
+                        IsCancel="True"
+                        MinWidth="96"
+                        Margin="0,0,8,0"
+                        Style="{StaticResource SecondaryCompactButtonStyle}"
+                        Click="CancelButton_Click" />
+                <Button x:Name="ConfirmButton"
+                        Content="Confirm"
+                        MinWidth="112"
+                        Style="{StaticResource SystemControlCriticalButtonStyle}"
+                        Margin="0"
+                        Click="ConfirmButton_Click" />
+            </StackPanel>
+        </StackPanel>
+    </Border>
+</Window>

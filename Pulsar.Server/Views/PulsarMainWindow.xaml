@@ -10,9 +10,58 @@
         Title="Pulsar Premium"
         Width="1400"
         Height="900"
+        MinWidth="900"
+        MinHeight="640"
         WindowStartupLocation="CenterScreen"
-        Style="{StaticResource PulsarWindowStyle}"
-        Background="{DynamicResource WindowBackground}">
+        Style="{DynamicResource PulsarWindowStyle}"
+        Background="{DynamicResource WindowBackgroundBrush}"
+        Foreground="{DynamicResource WindowForegroundBrush}">
+
+    <Window.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="pack://application:,,,/Pulsar;component/Resources/Styles/Generic.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+
+            <BooleanToVisibilityConverter x:Key="BoolToVisibilityConverter" />
+        </ResourceDictionary>
+    </Window.Resources>
+
+    <!-- Global Keyboard Shortcuts (matched 1-to-1 with tooltips & menus) -->
+    <Window.InputBindings>
+        <!-- System Control Shortcuts -->
+        <KeyBinding Key="D" Modifiers="Control+Shift" Command="{Binding DisconnectCommand}" />
+        <KeyBinding Key="N" Modifiers="Control+Shift" Command="{Binding ReconnectCommand}" />
+        <KeyBinding Key="R" Modifiers="Control+Shift" Command="{Binding RestartCommand}" />
+        <KeyBinding Key="P" Modifiers="Control+Shift" Command="{Binding ShutdownCommand}" />
+        <KeyBinding Key="S" Modifiers="Control+Shift" Command="{Binding StandbyCommand}" />
+        <KeyBinding Key="L" Modifiers="Control+Shift" Command="{Binding LockscreenCommand}" />
+        <KeyBinding Key="M" Modifiers="Control+Shift" Command="{Binding ShowMessageBoxCommand}" />
+        <KeyBinding Key="E" Modifiers="Control+Shift" Command="{Binding ExecuteCommandCommand}" />
+        <KeyBinding Key="U" Modifiers="Control+Shift" Command="{Binding UninstallCommand}" />
+
+        <!-- Tool Launch Shortcuts -->
+        <KeyBinding Key="M" Modifiers="Control+Alt" Command="{Binding QuickMicrophoneCommand}" />
+        <KeyBinding Key="D" Modifiers="Control+Alt" Command="{Binding QuickRemoteDesktopCommand}" />
+        <KeyBinding Key="W" Modifiers="Control+Alt" Command="{Binding QuickWebcamCommand}" />
+        <KeyBinding Key="K" Modifiers="Control+Alt" Command="{Binding QuickKeyloggerCommand}" />
+        <KeyBinding Key="F" Modifiers="Control+Alt" Command="{Binding QuickFileManagerCommand}" />
+        <KeyBinding Key="S" Modifiers="Control+Alt" Command="{Binding QuickRemoteShellCommand}" />
+        <KeyBinding Key="X" Modifiers="Control+Alt" Command="{Binding QuickRemoteExecutionCommand}" />
+        <KeyBinding Key="H" Modifiers="Control+Alt" Command="{Binding QuickHvncCommand}" />
+
+        <!-- Navigation & Global Utilities -->
+        <KeyBinding Key="D1" Modifiers="Control" Command="{Binding NavigateTabCommand}" CommandParameter="0" />
+        <KeyBinding Key="D2" Modifiers="Control" Command="{Binding NavigateTabCommand}" CommandParameter="1" />
+        <KeyBinding Key="D3" Modifiers="Control" Command="{Binding NavigateTabCommand}" CommandParameter="2" />
+        <KeyBinding Key="D4" Modifiers="Control" Command="{Binding NavigateTabCommand}" CommandParameter="3" />
+        <KeyBinding Key="D5" Modifiers="Control" Command="{Binding NavigateTabCommand}" CommandParameter="4" />
+        <KeyBinding Key="D6" Modifiers="Control" Command="{Binding NavigateTabCommand}" CommandParameter="5" />
+        <KeyBinding Key="D7" Modifiers="Control" Command="{Binding NavigateTabCommand}" CommandParameter="6" />
+        <KeyBinding Key="F5" Command="{Binding RefreshAllCommand}" />
+        <KeyBinding Key="T" Modifiers="Control" Command="{Binding ToggleThemeCommand}" />
+        <KeyBinding Key="Escape" Command="{Binding ClearSelectionCommand}" />
+    </Window.InputBindings>
 
     <Grid>
         <Grid.RowDefinitions>
@@ -24,55 +73,187 @@
             <!-- Status Bar -->
         </Grid.RowDefinitions>
 
-        <!-- Menu Bar -->
-        <Menu Grid.Row="0" Background="{DynamicResource MenuBackground}">
-            <MenuItem Header="Clients">
+        <!-- Full Wired Menu Bar -->
+        <Menu Grid.Row="0"
+              Background="{DynamicResource MenuBackgroundBrush}"
+              Foreground="{DynamicResource WindowForegroundBrush}"
+              BorderBrush="{DynamicResource BorderBrush}"
+              BorderThickness="0,0,0,1"
+              Padding="4,2">
+            <MenuItem Header="_Clients">
+                <MenuItem Header="Refresh All Data" InputGestureText="F5" Command="{Binding RefreshAllCommand}" />
+                <MenuItem Header="Deselect Current Client" InputGestureText="Esc" Command="{Binding ClearSelectionCommand}" />
+                <MenuItem Header="Clear Search Filter" Command="{Binding ClearSearchCommand}" />
+                <Separator />
+                <MenuItem Header="Delete Temp Directory" Command="{Binding DeleteTempDirectoryCommand}" />
                 <MenuItem Header="Offline Clients">
-                    <MenuItem Header="Clear Offline Clients" Command="{Binding ClearOfflineClientsCommand}" />
+                    <MenuItem Header="View Offline Clients" InputGestureText="Ctrl+3" Command="{Binding NavigateTabCommand}" CommandParameter="2" />
+                    <MenuItem Header="Delete Selected Offline Client" Command="{Binding DeleteSelectedOfflineClientCommand}" />
+                    <MenuItem Header="Clear All Offline Clients" Command="{Binding ClearOfflineClientsCommand}" />
+                </MenuItem>
+                <Separator />
+                <MenuItem Header="Restore Confirmation Prompts" Command="{Binding ResetConfirmationsCommand}" />
+            </MenuItem>
+
+            <MenuItem Header="_Administration">
+                <MenuItem Header="System Information" Command="{Binding OpenSystemInfoCommand}" />
+                <MenuItem Header="File Manager" InputGestureText="Ctrl+Alt+F" Command="{Binding QuickFileManagerCommand}" />
+                <MenuItem Header="Startup Manager" Command="{Binding OpenStartupManagerCommand}" />
+                <MenuItem Header="Task Manager" Command="{Binding OpenTaskManagerCommand}" />
+                <MenuItem Header="Remote Shell" InputGestureText="Ctrl+Alt+S" Command="{Binding QuickRemoteShellCommand}" />
+                <MenuItem Header="TCP Connections" Command="{Binding OpenTcpConnectionsCommand}" />
+                <MenuItem Header="Reverse Proxy" Command="{Binding OpenReverseProxyCommand}" />
+                <MenuItem Header="Registry Editor" Command="{Binding OpenRegistryEditorCommand}" />
+                <MenuItem Header="Remote Execution" InputGestureText="Ctrl+Alt+X" Command="{Binding QuickRemoteExecutionCommand}" />
+                <Separator />
+                <MenuItem Header="Elevation">
+                    <MenuItem Header="Ask UAC Elevation" Command="{Binding AskElevateCommand}" />
+                    <MenuItem Header="UAC Bypass" Command="{Binding UacBypassCommand}" />
+                    <MenuItem Header="Elevate to SYSTEM" Command="{Binding ElevateSystemCommand}" />
+                    <MenuItem Header="De-Elevate" Command="{Binding DeElevateCommand}" />
                 </MenuItem>
             </MenuItem>
-            <MenuItem Header="Stats" />
-            <MenuItem Header="Map" />
-            <MenuItem Header="Auto Tasks" />
-            <MenuItem Header="Crypto Clipper" />
-            <MenuItem Header="Notifications Centre" />
-            <MenuItem Header="About" />
-            <MenuItem Header="Settings" />
-            <MenuItem Header="Builder" />
-            <MenuItem Header="Delete Temp Directory" />
+
+            <MenuItem Header="_Monitoring">
+                <MenuItem Header="Remote Desktop" InputGestureText="Ctrl+Alt+D" Command="{Binding QuickRemoteDesktopCommand}" />
+                <MenuItem Header="Hidden VNC (HVNC)" InputGestureText="Ctrl+Alt+H" Command="{Binding QuickHvncCommand}" />
+                <MenuItem Header="Webcam" InputGestureText="Ctrl+Alt+W" Command="{Binding QuickWebcamCommand}" />
+                <MenuItem Header="Microphone" InputGestureText="Ctrl+Alt+M" Command="{Binding QuickMicrophoneCommand}" />
+                <MenuItem Header="System Audio" Command="{Binding OpenSystemAudioCommand}" />
+                <MenuItem Header="Keylogger" InputGestureText="Ctrl+Alt+K" Command="{Binding QuickKeyloggerCommand}" />
+                <MenuItem Header="Password Recovery" Command="{Binding OpenPasswordRecoveryCommand}" />
+                <MenuItem Header="Remote Chat" Command="{Binding OpenRemoteChatCommand}" />
+            </MenuItem>
+
+            <MenuItem Header="_Navigate">
+                <MenuItem Header="Clients" InputGestureText="Ctrl+1" Command="{Binding NavigateTabCommand}" CommandParameter="0" />
+                <MenuItem Header="Stats" InputGestureText="Ctrl+2" Command="{Binding NavigateTabCommand}" CommandParameter="1" />
+                <MenuItem Header="Offline Clients" InputGestureText="Ctrl+3" Command="{Binding NavigateTabCommand}" CommandParameter="2" />
+                <MenuItem Header="Heat Map" InputGestureText="Ctrl+4" Command="{Binding NavigateTabCommand}" CommandParameter="3" />
+                <MenuItem Header="Notifications Centre" InputGestureText="Ctrl+5" Command="{Binding NavigateTabCommand}" CommandParameter="4" />
+                <MenuItem Header="Crypto Clipper" InputGestureText="Ctrl+6" Command="{Binding NavigateTabCommand}" CommandParameter="5" />
+                <MenuItem Header="Auto Tasks" InputGestureText="Ctrl+7" Command="{Binding NavigateTabCommand}" CommandParameter="6" />
+            </MenuItem>
+
+            <MenuItem Header="_View">
+                <MenuItem Header="{Binding ThemeToggleLabel}" InputGestureText="Ctrl+T" Command="{Binding ToggleThemeCommand}" />
+                <MenuItem Header="Disable Preview" IsCheckable="True" IsChecked="{Binding DisablePreview}" />
+                <Separator />
+                <MenuItem Header="Clear Debug &amp; Audit Log" Command="{Binding ClearDebugLogsCommand}" />
+            </MenuItem>
+
+            <MenuItem Header="_Tools">
+                <MenuItem Header="Settings" Command="{Binding OpenSettingsCommand}" />
+                <MenuItem Header="Client Builder" Command="{Binding OpenBuilderCommand}" />
+                <MenuItem Header="Notification Keywords" Command="{Binding OpenKeywordsCommand}" />
+                <Separator />
+                <MenuItem Header="About Pulsar" Command="{Binding OpenAboutCommand}" />
+            </MenuItem>
         </Menu>
 
         <!-- Main Tab Control -->
-        <TabControl Grid.Row="1" 
-                    Background="{DynamicResource PanelBackground}"
-                    Foreground="{DynamicResource TextForeground}">
-            
-            <!-- Tab 1: Online Clients -->
+        <TabControl Grid.Row="1"
+                    SelectedIndex="{Binding SelectedTabIndex}"
+                    Background="{DynamicResource WindowBackgroundBrush}"
+                    Foreground="{DynamicResource WindowForegroundBrush}"
+                    BorderBrush="{DynamicResource BorderBrush}">
+
+            <!-- ========================================================= -->
+            <!-- TAB 1: ONLINE CLIENTS + GLASS MORPHISM QUICK ACCESS       -->
+            <!-- ========================================================= -->
             <TabItem Header="Clients">
-                <Grid Background="{DynamicResource PanelBackground}">
+                <Grid Background="{DynamicResource WindowBackgroundBrush}">
                     <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="2*" />
-                        <ColumnDefinition Width="1*" />
+                        <ColumnDefinition Width="*" MinWidth="420" />
+                        <ColumnDefinition Width="5" />
+                        <ColumnDefinition Width="420" MinWidth="350" MaxWidth="560" />
                     </Grid.ColumnDefinitions>
-                    
-                    <!-- Clients List (DataGrid - Real Data Binding) -->
-                    <Border Grid.Column="0" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Margin="4">
+
+                    <!-- Left Panel: Search Bar + Connected Clients DataGrid -->
+                    <Border Grid.Column="0"
+                            Background="{DynamicResource PanelBackgroundBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Margin="8,8,4,8"
+                            ClipToBounds="True">
                         <Grid>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
                                 <RowDefinition Height="*" />
                             </Grid.RowDefinitions>
-                            
-                            <!-- Client Count Header -->
-                            <TextBlock Grid.Row="0" 
-                                       Text="{Binding ConnectedClientCount, StringFormat='Connected: {0} clients'}" 
-                                       Foreground="{DynamicResource TextForeground}"
-                                       Margin="8,4,8,4"
-                                       FontWeight="Bold" />
-                            
-                            <!-- DataGrid for Clients -->
-                            <DataGrid Grid.Row="1"
-                                      ItemsSource="{Binding OnlineClients}"
+
+                            <!-- Header Bar -->
+                            <Border Grid.Row="0"
+                                    Background="{DynamicResource CardSubtleBrush}"
+                                    BorderBrush="{DynamicResource BorderBrush}"
+                                    BorderThickness="0,0,0,1"
+                                    Padding="12,8">
+                                <DockPanel>
+                                    <TextBlock Text="{Binding ClientsHeaderText}"
+                                               Foreground="{DynamicResource WindowForegroundBrush}"
+                                               FontSize="12.5"
+                                               FontWeight="Bold"
+                                               VerticalAlignment="Center" />
+                                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" HorizontalAlignment="Right">
+                                        <Button Content="↻ Refresh"
+                                                Command="{Binding RefreshAllCommand}"
+                                                Style="{StaticResource SecondaryCompactButtonStyle}"
+                                                Padding="8,3"
+                                                MinHeight="24"
+                                                Margin="0,0,6,0"
+                                                FontSize="10.5" />
+                                        <Button Content="{Binding ThemeToggleLabel}"
+                                                Command="{Binding ToggleThemeCommand}"
+                                                Style="{StaticResource SecondaryCompactButtonStyle}"
+                                                Padding="8,3"
+                                                MinHeight="24"
+                                                FontSize="10.5" />
+                                    </StackPanel>
+                                </DockPanel>
+                            </Border>
+
+                            <!-- Live Search / Filter Bar -->
+                            <Border Grid.Row="1"
+                                    Background="{DynamicResource PanelBackgroundBrush}"
+                                    BorderBrush="{DynamicResource SeparatorBrush}"
+                                    BorderThickness="0,0,0,1"
+                                    Padding="8,6">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0"
+                                               Text="🔍"
+                                               VerticalAlignment="Center"
+                                               Margin="4,0,8,0"
+                                               Foreground="{DynamicResource TextMutedBrush}" />
+                                    <TextBox x:Name="ClientSearchTextBox"
+                                             Grid.Column="1"
+                                             Text="{Binding SearchQuery, UpdateSourceTrigger=PropertyChanged}"
+                                             ToolTip="Filter by user, hostname, IP, country, OS, tag, or client ID"
+                                             Padding="8,4"
+                                             FontSize="11.5"
+                                             AutomationProperties.Name="Filter connected clients" />
+                                    <Button Grid.Column="2"
+                                            Content="Clear"
+                                            Command="{Binding ClearSearchCommand}"
+                                            Style="{StaticResource SecondaryCompactButtonStyle}"
+                                            Margin="6,0,0,0"
+                                            Padding="8,3"
+                                            MinHeight="26"
+                                            FontSize="10.5"
+                                            Visibility="{Binding HasSearchQuery, Converter={StaticResource BoolToVisibilityConverter}}" />
+                                </Grid>
+                            </Border>
+
+                            <!-- DataGrid for Online Clients with Full Context Menu -->
+                            <DataGrid x:Name="OnlineClientsDataGrid"
+                                      Grid.Row="2"
+                                      ItemsSource="{Binding OnlineClientsView}"
                                       SelectedItem="{Binding SelectedClient}"
                                       AutoGenerateColumns="False"
                                       CanUserAddRows="False"
@@ -81,292 +262,944 @@
                                       CanUserResizeRows="False"
                                       CanUserSortColumns="True"
                                       SelectionMode="Single"
-                                      Background="{DynamicResource PanelBackground}"
-                                      Foreground="{DynamicResource TextForeground}"
-                                      RowBackground="{DynamicResource PanelBackground}"
-                                      AlternatingRowBackground="{DynamicResource PanelBackground}"
-                                      GridLinesVisibility="Horizontal"
-                                      HeadersVisibility="Column">
+                                      PreviewMouseRightButtonDown="OnlineClientsDataGrid_PreviewMouseRightButtonDown"
+                                      MouseDoubleClick="OnlineClientsDataGrid_MouseDoubleClick">
+                                <DataGrid.ContextMenu>
+                                    <ContextMenu>
+                                        <MenuItem Header="📡 Monitoring">
+                                            <MenuItem Header="🖥️ Remote Desktop" InputGestureText="Ctrl+Alt+D" Command="{Binding QuickRemoteDesktopCommand}" />
+                                            <MenuItem Header="🪟 Hidden VNC (HVNC)" InputGestureText="Ctrl+Alt+H" Command="{Binding QuickHvncCommand}" />
+                                            <MenuItem Header="📷 Webcam" InputGestureText="Ctrl+Alt+W" Command="{Binding QuickWebcamCommand}" />
+                                            <MenuItem Header="📞 Microphone" InputGestureText="Ctrl+Alt+M" Command="{Binding QuickMicrophoneCommand}" />
+                                            <MenuItem Header="🔊 System Audio" Command="{Binding OpenSystemAudioCommand}" />
+                                            <MenuItem Header="⌨️ Keylogger" InputGestureText="Ctrl+Alt+K" Command="{Binding QuickKeyloggerCommand}" />
+                                            <MenuItem Header="🔑 Password Recovery" Command="{Binding OpenPasswordRecoveryCommand}" />
+                                        </MenuItem>
+                                        <MenuItem Header="🛠️ Administration">
+                                            <MenuItem Header="📁 File Manager" InputGestureText="Ctrl+Alt+F" Command="{Binding QuickFileManagerCommand}" />
+                                            <MenuItem Header="💻 Remote Shell" InputGestureText="Ctrl+Alt+S" Command="{Binding QuickRemoteShellCommand}" />
+                                            <MenuItem Header="🚀 Remote Execution" InputGestureText="Ctrl+Alt+X" Command="{Binding QuickRemoteExecutionCommand}" />
+                                            <Separator />
+                                            <MenuItem Header="📊 Task Manager" Command="{Binding OpenTaskManagerCommand}" />
+                                            <MenuItem Header="ℹ️ System Information" Command="{Binding OpenSystemInfoCommand}" />
+                                            <MenuItem Header="📌 Startup Manager" Command="{Binding OpenStartupManagerCommand}" />
+                                            <MenuItem Header="🗂️ Registry Editor" Command="{Binding OpenRegistryEditorCommand}" />
+                                            <MenuItem Header="🌐 TCP Connections" Command="{Binding OpenTcpConnectionsCommand}" />
+                                            <MenuItem Header="🔀 Reverse Proxy" Command="{Binding OpenReverseProxyCommand}" />
+                                        </MenuItem>
+                                        <MenuItem Header="💬 User Support &amp; Maintenance">
+                                            <MenuItem Header="💬 Show Message Box" InputGestureText="Ctrl+Shift+M" Command="{Binding ShowMessageBoxCommand}" />
+                                            <MenuItem Header="⚡ Execute Quick Command" InputGestureText="Ctrl+Shift+E" Command="{Binding ExecuteCommandCommand}" />
+                                            <MenuItem Header="💭 Remote Chat" Command="{Binding OpenRemoteChatCommand}" />
+                                            <Separator />
+                                            <MenuItem Header="🧹 Delete Temp Directory" Command="{Binding DeleteTempDirectoryCommand}" />
+                                        </MenuItem>
+                                        <MenuItem Header="🛡️ Elevation">
+                                            <MenuItem Header="Ask UAC Elevation" Command="{Binding AskElevateCommand}" />
+                                            <MenuItem Header="UAC Bypass" Command="{Binding UacBypassCommand}" />
+                                            <MenuItem Header="Elevate to SYSTEM" Command="{Binding ElevateSystemCommand}" />
+                                            <MenuItem Header="De-Elevate" Command="{Binding DeElevateCommand}" />
+                                        </MenuItem>
+                                        <Separator />
+                                        <MenuItem Header="⚠️ System Control">
+                                            <MenuItem Header="🔌 Disconnect" InputGestureText="Ctrl+Shift+D" Command="{Binding DisconnectCommand}" />
+                                            <MenuItem Header="🔁 Reconnect" InputGestureText="Ctrl+Shift+N" Command="{Binding ReconnectCommand}" />
+                                            <MenuItem Header="💤 Standby" InputGestureText="Ctrl+Shift+S" Command="{Binding StandbyCommand}" />
+                                            <MenuItem Header="🔒 Lockscreen" InputGestureText="Ctrl+Shift+L" Command="{Binding LockscreenCommand}" />
+                                            <Separator />
+                                            <MenuItem Header="🔄 Restart" InputGestureText="Ctrl+Shift+R" Command="{Binding RestartCommand}" />
+                                            <MenuItem Header="⏻ Shutdown" InputGestureText="Ctrl+Shift+P" Command="{Binding ShutdownCommand}" />
+                                            <MenuItem Header="🗑️ Uninstall Client" InputGestureText="Ctrl+Shift+U" Command="{Binding UninstallCommand}" />
+                                        </MenuItem>
+                                        <Separator />
+                                        <MenuItem Header="📋 Copy Client Details">
+                                            <MenuItem Header="Copy User@Host" Command="{Binding CopyClientUserAtPcCommand}" />
+                                            <MenuItem Header="Copy Public IP" Command="{Binding CopyClientIpCommand}" />
+                                            <MenuItem Header="Copy Endpoint" Command="{Binding CopyClientEndpointCommand}" />
+                                            <MenuItem Header="Copy Client ID" Command="{Binding CopyClientIdCommand}" />
+                                        </MenuItem>
+                                    </ContextMenu>
+                                </DataGrid.ContextMenu>
                                 <DataGrid.Columns>
+                                    <DataGridTextColumn Header="User" Binding="{Binding Value.Username}" Width="130" IsReadOnly="True" />
+                                    <DataGridTextColumn Header="Host" Binding="{Binding Value.PcName}" Width="130" IsReadOnly="True" />
                                     <DataGridTextColumn Header="Endpoint" Binding="{Binding EndPoint}" Width="*" IsReadOnly="True" />
-                                    <DataGridTextColumn Header="User" Binding="{Binding Value.Username}" Width="150" IsReadOnly="True" />
-                                    <DataGridCheckBoxColumn Header="Connected" Binding="{Binding Connected}" Width="80" IsReadOnly="True" />
+                                    <DataGridTextColumn Header="Country" Binding="{Binding Value.CountryWithCode}" Width="115" IsReadOnly="True" />
+                                    <DataGridTextColumn Header="OS" Binding="{Binding Value.OperatingSystem}" Width="140" IsReadOnly="True" />
+                                    <DataGridTextColumn Header="Tag" Binding="{Binding Value.Tag}" Width="90" IsReadOnly="True" />
+                                    <DataGridCheckBoxColumn Header="Online" Binding="{Binding Connected}" Width="62" IsReadOnly="True" />
                                 </DataGrid.Columns>
                             </DataGrid>
                         </Grid>
                     </Border>
-                    
-                    <!-- Client Info Panel -->
-                    <StackPanel Grid.Column="1" Margin="4">
-                        <TextBlock Text="Clients Info" 
-                                   FontWeight="Bold" 
-                                   Foreground="{DynamicResource AccentColor}"
-                                   Margin="0,0,0,8" />
-                        
-                        <!-- Quick Action Buttons -->
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="Auto" />
-                            </Grid.RowDefinitions>
-                            
-                            <Button Grid.Row="0" Grid.Column="0" Content="📞 Microphone" Margin="2" Padding="8" 
-                                    Command="{Binding QuickMicrophoneCommand}"
-                                    Background="{DynamicResource ButtonBackground}"
-                                    Foreground="{DynamicResource TextForeground}" />
-                            <Button Grid.Row="0" Grid.Column="1" Content="🖥️ Remote Desktop" Margin="2" Padding="8"
-                                    Command="{Binding QuickRemoteDesktopCommand}"
-                                    Background="{DynamicResource ButtonBackground}"
-                                    Foreground="{DynamicResource TextForeground}" />
-                            
-                            <Button Grid.Row="1" Grid.Column="0" Content="📷 Webcam" Margin="2" Padding="8"
-                                    Command="{Binding QuickWebcamCommand}"
-                                    Background="{DynamicResource ButtonBackground}"
-                                    Foreground="{DynamicResource TextForeground}" />
-                            <Button Grid.Row="1" Grid.Column="1" Content="⌨️ Keylogger" Margin="2" Padding="8"
-                                    Command="{Binding QuickKeyloggerCommand}"
-                                    Background="{DynamicResource ButtonBackground}"
-                                    Foreground="{DynamicResource TextForeground}" />
-                            
-                            <Button Grid.Row="2" Grid.Column="0" Content="📁 File Manager" Margin="2" Padding="8"
-                                    Command="{Binding QuickFileManagerCommand}"
-                                    Background="{DynamicResource ButtonBackground}"
-                                    Foreground="{DynamicResource TextForeground}" />
-                            <Button Grid.Row="2" Grid.Column="1" Content="💻 Remote Shell" Margin="2" Padding="8"
-                                    Command="{Binding QuickRemoteShellCommand}"
-                                    Background="{DynamicResource ButtonBackground}"
-                                    Foreground="{DynamicResource TextForeground}" />
-                            
-                            <Button Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="2" Content="🔍 File Explorer" Margin="2" Padding="8"
-                                    Command="{Binding QuickFileExplorerCommand}"
-                                    Background="{DynamicResource ButtonBackground}"
-                                    Foreground="{DynamicResource TextForeground}" />
-                        </Grid>
-                        
-                        <!-- Disable Preview Checkbox -->
-                        <CheckBox Margin="0,8,0,8" Foreground="{DynamicResource TextForeground}">Disable Preview</CheckBox>
-                        
-                        <!-- Client Info List -->
-                        <GroupBox Header="Information" Margin="0,8,0,8" Foreground="{DynamicResource TextForeground}">
-                            <ListBox Height="150" Foreground="{DynamicResource TextForeground}" Background="{DynamicResource PanelBackground}">
-                                <ListBoxItem>
-                                    <TextBlock>
-                                        <Run Text="Selected: " FontWeight="Bold" />
-                                        <Run Text="{Binding SelectedClient.Value.Username, Mode=OneWay}" />
-                                    </TextBlock>
-                                </ListBoxItem>
-                                <ListBoxItem>
-                                    <TextBlock>
-                                        <Run Text="IP: " FontWeight="Bold" />
-                                        <Run Text="{Binding SelectedClient.Value.PublicIP, Mode=OneWay}" />
-                                    </TextBlock>
-                                </ListBoxItem>
-                                <ListBoxItem>
-                                    <TextBlock>
-                                        <Run Text="Country: " FontWeight="Bold" />
-                                        <Run Text="{Binding SelectedClient.Value.Country, Mode=OneWay}" />
-                                    </TextBlock>
-                                </ListBoxItem>
-                                <ListBoxItem>
-                                    <TextBlock>
-                                        <Run Text="Connected: " FontWeight="Bold" />
-                                        <Run Text="{Binding SelectedClient.Connected, Mode=OneWay}" />
-                                    </TextBlock>
-                                </ListBoxItem>
-                                <ListBoxItem>
-                                    <TextBlock>
-                                        <Run Text="Identified: " FontWeight="Bold" />
-                                        <Run Text="{Binding SelectedClient.Identified, Mode=OneWay}" />
-                                    </TextBlock>
-                                </ListBoxItem>
-                            </ListBox>
-                        </GroupBox>
-                        
-                        <!-- Debug Log -->
-                        <TextBlock Text="Debug Log" FontWeight="Bold" Foreground="{DynamicResource AccentColor}" Margin="0,8,0,4" />
-                        <RichTextBox Height="100" Margin="0,0,0,0" Foreground="{DynamicResource TextForeground}" />
-                    </StackPanel>
-                </Grid>
-            </TabItem>
 
-            <!-- Tab 2: Stats -->
-            <TabItem Header="Stats">
-                <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Margin="4">
-                    <TextBlock Text="Stats Panel (StatsElementHost Placeholder)" 
-                               VerticalAlignment="Center" 
-                               HorizontalAlignment="Center"
-                               Foreground="{DynamicResource TextForeground}" />
-                </Border>
-            </TabItem>
+                    <!-- Resizable Splitter -->
+                    <GridSplitter Grid.Column="1"
+                                  Width="5"
+                                  HorizontalAlignment="Stretch"
+                                  VerticalAlignment="Stretch"
+                                  Background="Transparent"
+                                  ShowsPreview="True"
+                                  Cursor="SizeWE" />
 
-            <!-- Tab 3: Offline Clients -->
-            <TabItem Header="Offline Clients">
-                <Grid Background="{DynamicResource PanelBackground}">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="*" />
-                        <RowDefinition Height="Auto" />
-                    </Grid.RowDefinitions>
-                    
-                    <!-- Header -->
-                    <TextBlock Grid.Row="0" 
-                               Text="{Binding OfflineClients.Count, StringFormat='Offline Records: {0}'}" 
-                               Foreground="{DynamicResource TextForeground}"
-                               Margin="8,4,8,4"
-                               FontWeight="Bold" />
-                    
-                    <!-- ListBox for Offline Clients -->
-                    <ListBox Grid.Row="1"
-                             ItemsSource="{Binding OfflineClients}"
-                             Background="{DynamicResource PanelBackground}"
-                             Foreground="{DynamicResource TextForeground}"
-                             Margin="4">
-                        <ListBox.ItemTemplate>
-                            <DataTemplate>
-                                <TextBlock Text="{Binding ClientId, StringFormat='ID: {0}'}" />
-                            </DataTemplate>
-                        </ListBox.ItemTemplate>
-                    </ListBox>
-                    
-                    <!-- Action Buttons -->
-                    <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="4">
-                        <Button Content="Delete Selected" Margin="2" Padding="8" 
-                                Background="{DynamicResource ButtonBackground}"
-                                Foreground="{DynamicResource TextForeground}" />
-                        <Button Content="Clear All" Margin="2" Padding="8"
-                                Command="{Binding ClearOfflineClientsCommand}"
-                                Background="{DynamicResource ButtonBackground}"
-                                Foreground="{DynamicResource TextForeground}" />
-                    </StackPanel>
-                </Grid>
-            </TabItem>
+                    <!-- Right Panel: Scrollable Categorized Quick Access & Client Information -->
+                    <ScrollViewer Grid.Column="2"
+                                  VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled"
+                                  Margin="4,8,8,8">
+                        <StackPanel Margin="0,0,4,4">
 
-            <!-- Tab 4: Heat Map -->
-            <TabItem Header="Heat Map">
-                <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Margin="4">
-                    <TextBlock Text="Heat Map (HeatMapElementHost Placeholder)" 
-                               VerticalAlignment="Center" 
-                               HorizontalAlignment="Center"
-                               Foreground="{DynamicResource TextForeground}" />
-                </Border>
-            </TabItem>
+                            <!-- Section Header -->
+                            <DockPanel Margin="2,0,2,10">
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                    <TextBlock Text="🎯" FontSize="14" Margin="0,0,6,0" VerticalAlignment="Center" />
+                                    <TextBlock Text="QUICK ACCESS"
+                                               FontSize="12.5"
+                                               FontWeight="Bold"
+                                               Foreground="{DynamicResource WindowForegroundBrush}"
+                                               VerticalAlignment="Center" />
+                                </StackPanel>
 
-            <!-- Tab 5: Notifications -->
-            <TabItem Header="Notifications">
-                <Grid Background="{DynamicResource PanelBackground}">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="*" />
-                        <RowDefinition Height="Auto" />
-                    </Grid.RowDefinitions>
-                    
-                    <ListBox Grid.Row="0" Foreground="{DynamicResource TextForeground}" Margin="4">
-                        <ListBoxItem>Notification 1</ListBoxItem>
-                    </ListBox>
-                    
-                    <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="4">
-                        <Button Content="Add Keywords" Margin="2" Padding="8" 
-                                Background="{DynamicResource ButtonBackground}"
-                                Foreground="{DynamicResource TextForeground}" />
-                        <Button Content="Clear Selected" Margin="2" Padding="8"
-                                Background="{DynamicResource ButtonBackground}"
-                                Foreground="{DynamicResource TextForeground}" />
-                        <Button Content="Clear All" Margin="2" Padding="8"
-                                Background="{DynamicResource ButtonBackground}"
-                                Foreground="{DynamicResource TextForeground}" />
-                    </StackPanel>
-                </Grid>
-            </TabItem>
+                                <TextBlock DockPanel.Dock="Right"
+                                           HorizontalAlignment="Right"
+                                           VerticalAlignment="Center"
+                                           FontSize="10.5"
+                                           Foreground="{DynamicResource TextMutedBrush}"
+                                           Text="Esc to deselect" />
+                            </DockPanel>
 
-            <!-- Tab 6: Crypto -->
-            <TabItem Header="Crypto">
-                <StackPanel Margin="16" Background="{DynamicResource PanelBackground}">
-                    <GroupBox Header="Crypto Addresses" Foreground="{DynamicResource TextForeground}" Margin="0,0,0,8">
-                        <StackPanel>
-                            <Grid Margin="4">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto" />
-                                    <ColumnDefinition Width="*" />
-                                </Grid.ColumnDefinitions>
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="Auto" />
-                                </Grid.RowDefinitions>
-                                
-                                <TextBlock Text="Bitcoin:" Grid.Row="0" Grid.Column="0" Margin="0,4" Foreground="{DynamicResource TextForeground}" />
-                                <TextBox Grid.Row="0" Grid.Column="1" Margin="4" Foreground="{DynamicResource TextForeground}" />
-                                
-                                <TextBlock Text="Ethereum:" Grid.Row="1" Grid.Column="0" Margin="0,4" Foreground="{DynamicResource TextForeground}" />
-                                <TextBox Grid.Row="1" Grid.Column="1" Margin="4" Foreground="{DynamicResource TextForeground}" />
-                                
-                                <TextBlock Text="Litecoin:" Grid.Row="2" Grid.Column="0" Margin="0,4" Foreground="{DynamicResource TextForeground}" />
-                                <TextBox Grid.Row="2" Grid.Column="1" Margin="4" Foreground="{DynamicResource TextForeground}" />
-                                
-                                <TextBlock Text="Monero:" Grid.Row="3" Grid.Column="0" Margin="0,4" Foreground="{DynamicResource TextForeground}" />
-                                <TextBox Grid.Row="3" Grid.Column="1" Margin="4" Foreground="{DynamicResource TextForeground}" />
-                                
-                                <TextBlock Text="Solana:" Grid.Row="4" Grid.Column="0" Margin="0,4" Foreground="{DynamicResource TextForeground}" />
-                                <TextBox Grid.Row="4" Grid.Column="1" Margin="4" Foreground="{DynamicResource TextForeground}" />
-                                
-                                <TextBlock Text="Dash:" Grid.Row="5" Grid.Column="0" Margin="0,4" Foreground="{DynamicResource TextForeground}" />
-                                <TextBox Grid.Row="5" Grid.Column="1" Margin="4" Foreground="{DynamicResource TextForeground}" />
-                                
-                                <TextBlock Text="XRP:" Grid.Row="6" Grid.Column="0" Margin="0,4" Foreground="{DynamicResource TextForeground}" />
-                                <TextBox Grid.Row="6" Grid.Column="1" Margin="4" Foreground="{DynamicResource TextForeground}" />
-                                
-                                <TextBlock Text="Bitcoin Cash:" Grid.Row="7" Grid.Column="0" Margin="0,4" Foreground="{DynamicResource TextForeground}" />
-                                <TextBox Grid.Row="7" Grid.Column="1" Margin="4" Foreground="{DynamicResource TextForeground}" />
-                            </Grid>
+                            <!-- Live Operation Feedback Banner -->
+                            <Border x:Name="FeedbackBannerBorder"
+                                    CornerRadius="7"
+                                    Padding="10,7"
+                                    Margin="0,0,0,10"
+                                    BorderThickness="1"
+                                    Visibility="{Binding HasFeedbackBanner, Converter={StaticResource BoolToVisibilityConverter}}">
+                                <Border.Style>
+                                    <Style TargetType="Border">
+                                        <Setter Property="Background" Value="{DynamicResource FeedbackInfoBackground}" />
+                                        <Setter Property="BorderBrush" Value="{DynamicResource InfoBrush}" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding FeedbackBannerState}" Value="Success">
+                                                <Setter Property="Background" Value="{DynamicResource FeedbackSuccessBackground}" />
+                                                <Setter Property="BorderBrush" Value="{DynamicResource SuccessBrush}" />
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding FeedbackBannerState}" Value="Error">
+                                                <Setter Property="Background" Value="{DynamicResource FeedbackErrorBackground}" />
+                                                <Setter Property="BorderBrush" Value="{DynamicResource ErrorBrush}" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Border.Style>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0"
+                                               Text="{Binding FeedbackBannerText}"
+                                               TextWrapping="Wrap"
+                                               FontSize="11"
+                                               FontWeight="SemiBold"
+                                               VerticalAlignment="Center"
+                                               Foreground="{DynamicResource WindowForegroundBrush}" />
+                                    <Button Grid.Column="1"
+                                            Content="✕"
+                                            Command="{Binding DismissFeedbackBannerCommand}"
+                                            Style="{StaticResource SecondaryCompactButtonStyle}"
+                                            Padding="6,1"
+                                            MinHeight="20"
+                                            Margin="8,0,0,0"
+                                            FontSize="10"
+                                            AutomationProperties.Name="Dismiss feedback banner" />
+                                </Grid>
+                            </Border>
+
+                            <!-- CARD 1: SYSTEM CONTROL (RED GLASS MORPHISM) -->
+                            <ContentControl Style="{StaticResource SystemControlGlassCardStyle}">
+                                <StackPanel>
+                                    <DockPanel Margin="4,0,4,10">
+                                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                            <TextBlock Text="⚠️" FontSize="15" Margin="0,0,7,0" VerticalAlignment="Center" />
+                                            <TextBlock Text="SYSTEM CONTROL"
+                                                       FontWeight="Bold"
+                                                       FontSize="12.5"
+                                                       Foreground="{DynamicResource SystemControlAccentBrush}"
+                                                       VerticalAlignment="Center" />
+                                        </StackPanel>
+                                        <TextBlock DockPanel.Dock="Right"
+                                                   Text="Confirmed Ops"
+                                                   FontSize="10"
+                                                   FontStyle="Italic"
+                                                   HorizontalAlignment="Right"
+                                                   VerticalAlignment="Center"
+                                                   Foreground="{DynamicResource SystemControlSubtitleBrush}" />
+                                    </DockPanel>
+
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+
+                                        <Button Grid.Row="0" Grid.Column="0" Content="🔌 Disconnect" Command="{Binding DisconnectCommand}" Tag="{Binding DisconnectFeedback}" Style="{StaticResource SystemControlActionButtonStyle}" AutomationProperties.Name="Disconnect selected client">
+                                            <Button.ToolTip>
+                                                <ToolTip>
+                                                    <StackPanel MaxWidth="240">
+                                                        <TextBlock Text="Disconnect Client" FontWeight="Bold" Foreground="{DynamicResource SystemControlAccentBrush}" />
+                                                        <Separator Margin="0,4" Background="{DynamicResource SeparatorBrush}" />
+                                                        <TextBlock Text="Closes the active connection to the selected client. Confirmation required." TextWrapping="Wrap" FontSize="11" />
+                                                        <TextBlock Text="Shortcut: Ctrl+Shift+D" FontSize="10" Foreground="{DynamicResource TextMutedBrush}" Margin="0,5,0,0" />
+                                                    </StackPanel>
+                                                </ToolTip>
+                                            </Button.ToolTip>
+                                        </Button>
+
+                                        <Button Grid.Row="0" Grid.Column="1" Content="🔁 Reconnect" Command="{Binding ReconnectCommand}" Tag="{Binding ReconnectFeedback}" Style="{StaticResource SystemControlActionButtonStyle}" AutomationProperties.Name="Reconnect selected client">
+                                            <Button.ToolTip>
+                                                <ToolTip>
+                                                    <StackPanel MaxWidth="240">
+                                                        <TextBlock Text="Reconnect Client" FontWeight="Bold" Foreground="{DynamicResource SystemControlAccentBrush}" />
+                                                        <Separator Margin="0,4" Background="{DynamicResource SeparatorBrush}" />
+                                                        <TextBlock Text="Instructs the client to disconnect and re-establish its session." TextWrapping="Wrap" FontSize="11" />
+                                                        <TextBlock Text="Shortcut: Ctrl+Shift+N" FontSize="10" Foreground="{DynamicResource TextMutedBrush}" Margin="0,5,0,0" />
+                                                    </StackPanel>
+                                                </ToolTip>
+                                            </Button.ToolTip>
+                                        </Button>
+
+                                        <Button Grid.Row="1" Grid.Column="0" Content="🔄 Restart" Command="{Binding RestartCommand}" Tag="{Binding RestartFeedback}" Style="{StaticResource SystemControlActionButtonStyle}" AutomationProperties.Name="Restart remote computer">
+                                            <Button.ToolTip>
+                                                <ToolTip>
+                                                    <StackPanel MaxWidth="240">
+                                                        <TextBlock Text="Restart Machine (Critical)" FontWeight="Bold" Foreground="{DynamicResource SystemControlAccentBrush}" />
+                                                        <Separator Margin="0,4" Background="{DynamicResource SeparatorBrush}" />
+                                                        <TextBlock Text="Reboots the remote host immediately. Always requires confirmation." TextWrapping="Wrap" FontSize="11" />
+                                                        <TextBlock Text="Shortcut: Ctrl+Shift+R" FontSize="10" Foreground="{DynamicResource TextMutedBrush}" Margin="0,5,0,0" />
+                                                    </StackPanel>
+                                                </ToolTip>
+                                            </Button.ToolTip>
+                                        </Button>
+
+                                        <Button Grid.Row="1" Grid.Column="1" Content="⏻ Shutdown" Command="{Binding ShutdownCommand}" Tag="{Binding ShutdownFeedback}" Style="{StaticResource SystemControlActionButtonStyle}" AutomationProperties.Name="Shutdown remote computer">
+                                            <Button.ToolTip>
+                                                <ToolTip>
+                                                    <StackPanel MaxWidth="240">
+                                                        <TextBlock Text="Shutdown Machine (Critical)" FontWeight="Bold" Foreground="{DynamicResource SystemControlAccentBrush}" />
+                                                        <Separator Margin="0,4" Background="{DynamicResource SeparatorBrush}" />
+                                                        <TextBlock Text="Powers off the remote machine. Always requires confirmation." TextWrapping="Wrap" FontSize="11" />
+                                                        <TextBlock Text="Shortcut: Ctrl+Shift+P" FontSize="10" Foreground="{DynamicResource TextMutedBrush}" Margin="0,5,0,0" />
+                                                    </StackPanel>
+                                                </ToolTip>
+                                            </Button.ToolTip>
+                                        </Button>
+
+                                        <Button Grid.Row="2" Grid.Column="0" Content="💤 Standby" Command="{Binding StandbyCommand}" Tag="{Binding StandbyFeedback}" Style="{StaticResource SystemControlActionButtonStyle}" AutomationProperties.Name="Put remote computer into standby">
+                                            <Button.ToolTip>
+                                                <ToolTip>
+                                                    <StackPanel MaxWidth="240">
+                                                        <TextBlock Text="Standby / Sleep" FontWeight="Bold" Foreground="{DynamicResource SystemControlAccentBrush}" />
+                                                        <Separator Margin="0,4" Background="{DynamicResource SeparatorBrush}" />
+                                                        <TextBlock Text="Suspends the remote computer into sleep/standby mode." TextWrapping="Wrap" FontSize="11" />
+                                                        <TextBlock Text="Shortcut: Ctrl+Shift+S" FontSize="10" Foreground="{DynamicResource TextMutedBrush}" Margin="0,5,0,0" />
+                                                    </StackPanel>
+                                                </ToolTip>
+                                            </Button.ToolTip>
+                                        </Button>
+
+                                        <Button Grid.Row="2" Grid.Column="1" Content="🔒 Lockscreen" Command="{Binding LockscreenCommand}" Tag="{Binding LockscreenFeedback}" Style="{StaticResource SystemControlActionButtonStyle}" AutomationProperties.Name="Lock remote workstation screen">
+                                            <Button.ToolTip>
+                                                <ToolTip>
+                                                    <StackPanel MaxWidth="240">
+                                                        <TextBlock Text="Lock Screen" FontWeight="Bold" Foreground="{DynamicResource SystemControlAccentBrush}" />
+                                                        <Separator Margin="0,4" Background="{DynamicResource SeparatorBrush}" />
+                                                        <TextBlock Text="Locks the active Windows desktop session on the client." TextWrapping="Wrap" FontSize="11" />
+                                                        <TextBlock Text="Shortcut: Ctrl+Shift+L" FontSize="10" Foreground="{DynamicResource TextMutedBrush}" Margin="0,5,0,0" />
+                                                    </StackPanel>
+                                                </ToolTip>
+                                            </Button.ToolTip>
+                                        </Button>
+
+                                        <Button Grid.Row="3" Grid.Column="0" Content="💬 Message Box" Command="{Binding ShowMessageBoxCommand}" Tag="{Binding MessageBoxFeedback}" Style="{StaticResource SystemControlActionButtonStyle}" AutomationProperties.Name="Send message box to client">
+                                            <Button.ToolTip>
+                                                <ToolTip>
+                                                    <StackPanel MaxWidth="240">
+                                                        <TextBlock Text="Show Message Box" FontWeight="Bold" Foreground="{DynamicResource SystemControlAccentBrush}" />
+                                                        <Separator Margin="0,4" Background="{DynamicResource SeparatorBrush}" />
+                                                        <TextBlock Text="Opens a dialog to configure and display a message box on the client desktop." TextWrapping="Wrap" FontSize="11" />
+                                                        <TextBlock Text="Shortcut: Ctrl+Shift+M" FontSize="10" Foreground="{DynamicResource TextMutedBrush}" Margin="0,5,0,0" />
+                                                    </StackPanel>
+                                                </ToolTip>
+                                            </Button.ToolTip>
+                                        </Button>
+
+                                        <Button Grid.Row="3" Grid.Column="1" Content="⚡ Execute Cmd" Command="{Binding ExecuteCommandCommand}" Tag="{Binding ExecuteCommandFeedback}" Style="{StaticResource SystemControlActionButtonStyle}" AutomationProperties.Name="Execute quick command on client">
+                                            <Button.ToolTip>
+                                                <ToolTip>
+                                                    <StackPanel MaxWidth="240">
+                                                        <TextBlock Text="Execute Quick Command" FontWeight="Bold" Foreground="{DynamicResource SystemControlAccentBrush}" />
+                                                        <Separator Margin="0,4" Background="{DynamicResource SeparatorBrush}" />
+                                                        <TextBlock Text="Opens a dialog to execute a command via cmd.exe or powershell.exe on the client." TextWrapping="Wrap" FontSize="11" />
+                                                        <TextBlock Text="Shortcut: Ctrl+Shift+E" FontSize="10" Foreground="{DynamicResource TextMutedBrush}" Margin="0,5,0,0" />
+                                                    </StackPanel>
+                                                </ToolTip>
+                                            </Button.ToolTip>
+                                        </Button>
+
+                                        <Button Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="2" Content="🗑️ Uninstall Client" Command="{Binding UninstallCommand}" Tag="{Binding UninstallFeedback}" Style="{StaticResource SystemControlCriticalButtonStyle}" Margin="4,6,4,2" AutomationProperties.Name="Uninstall client permanently">
+                                            <Button.ToolTip>
+                                                <ToolTip>
+                                                    <StackPanel MaxWidth="250">
+                                                        <TextBlock Text="Uninstall Client (Irreversible)" FontWeight="Bold" Foreground="{DynamicResource ErrorBrush}" />
+                                                        <Separator Margin="0,4" Background="{DynamicResource SeparatorBrush}" />
+                                                        <TextBlock Text="Permanently removes the client and persistence from the remote machine. Always requires confirmation." TextWrapping="Wrap" FontSize="11" />
+                                                        <TextBlock Text="Shortcut: Ctrl+Shift+U" FontSize="10" Foreground="{DynamicResource TextMutedBrush}" Margin="0,5,0,0" />
+                                                    </StackPanel>
+                                                </ToolTip>
+                                            </Button.ToolTip>
+                                        </Button>
+                                    </Grid>
+                                </StackPanel>
+                            </ContentControl>
+
+                            <!-- CARD 2: TOOL LAUNCH (BLUE GLASS MORPHISM) -->
+                            <ContentControl Style="{StaticResource ToolLaunchGlassCardStyle}">
+                                <StackPanel>
+                                    <DockPanel Margin="4,0,4,10">
+                                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                            <TextBlock Text="📡" FontSize="15" Margin="0,0,7,0" VerticalAlignment="Center" />
+                                            <TextBlock Text="TOOL LAUNCH"
+                                                       FontWeight="Bold"
+                                                       FontSize="12.5"
+                                                       Foreground="{DynamicResource ToolLaunchAccentBrush}"
+                                                       VerticalAlignment="Center" />
+                                        </StackPanel>
+                                        <TextBlock DockPanel.Dock="Right"
+                                                   Text="Interactive Modules"
+                                                   FontSize="10"
+                                                   FontStyle="Italic"
+                                                   HorizontalAlignment="Right"
+                                                   VerticalAlignment="Center"
+                                                   Foreground="{DynamicResource ToolLaunchSubtitleBrush}" />
+                                    </DockPanel>
+
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+
+                                        <Button Grid.Row="0" Grid.Column="0" Content="📞 Microphone" Command="{Binding QuickMicrophoneCommand}" Tag="{Binding QuickMicrophoneFeedback}" Style="{StaticResource ToolLaunchActionButtonStyle}" AutomationProperties.Name="Open Remote Microphone">
+                                            <Button.ToolTip>
+                                                <ToolTip>
+                                                    <StackPanel MaxWidth="230">
+                                                        <TextBlock Text="Remote Microphone" FontWeight="Bold" Foreground="{DynamicResource ToolLaunchAccentBrush}" />
+                                                        <Separator Margin="0,4" Background="{DynamicResource SeparatorBrush}" />
+                                                        <TextBlock Text="Streams live microphone audio from the selected client." TextWrapping="Wrap" FontSize="11" />
+                                                        <TextBlock Text="Shortcut: Ctrl+Alt+M" FontSize="10" Foreground="{DynamicResource TextMutedBrush}" Margin="0,5,0,0" />
+                                                    </StackPanel>
+                                                </ToolTip>
+                                            </Button.ToolTip>
+                                        </Button>
+
+                                        <Button Grid.Row="0" Grid.Column="1" Content="🖥️ Remote Desktop" Command="{Binding QuickRemoteDesktopCommand}" Tag="{Binding QuickRemoteDesktopFeedback}" Style="{StaticResource ToolLaunchActionButtonStyle}" AutomationProperties.Name="Open Remote Desktop">
+                                            <Button.ToolTip>
+                                                <ToolTip>
+                                                    <StackPanel MaxWidth="230">
+                                                        <TextBlock Text="Remote Desktop" FontWeight="Bold" Foreground="{DynamicResource ToolLaunchAccentBrush}" />
+                                                        <Separator Margin="0,4" Background="{DynamicResource SeparatorBrush}" />
+                                                        <TextBlock Text="Opens the live remote desktop viewer and input session." TextWrapping="Wrap" FontSize="11" />
+                                                        <TextBlock Text="Shortcut: Ctrl+Alt+D" FontSize="10" Foreground="{DynamicResource TextMutedBrush}" Margin="0,5,0,0" />
+                                                    </StackPanel>
+                                                </ToolTip>
+                                            </Button.ToolTip>
+                                        </Button>
+
+                                        <Button Grid.Row="1" Grid.Column="0" Content="📷 Webcam" Command="{Binding QuickWebcamCommand}" Tag="{Binding QuickWebcamFeedback}" Style="{StaticResource ToolLaunchActionButtonStyle}" AutomationProperties.Name="Open Remote Webcam">
+                                            <Button.ToolTip>
+                                                <ToolTip>
+                                                    <StackPanel MaxWidth="230">
+                                                        <TextBlock Text="Remote Webcam" FontWeight="Bold" Foreground="{DynamicResource ToolLaunchAccentBrush}" />
+                                                        <Separator Margin="0,4" Background="{DynamicResource SeparatorBrush}" />
+                                                        <TextBlock Text="Opens the remote webcam capture module." TextWrapping="Wrap" FontSize="11" />
+                                                        <TextBlock Text="Shortcut: Ctrl+Alt+W" FontSize="10" Foreground="{DynamicResource TextMutedBrush}" Margin="0,5,0,0" />
+                                                    </StackPanel>
+                                                </ToolTip>
+                                            </Button.ToolTip>
+                                        </Button>
+
+                                        <Button Grid.Row="1" Grid.Column="1" Content="⌨️ Keylogger" Command="{Binding QuickKeyloggerCommand}" Tag="{Binding QuickKeyloggerFeedback}" Style="{StaticResource ToolLaunchActionButtonStyle}" AutomationProperties.Name="Open Keylogger Logs">
+                                            <Button.ToolTip>
+                                                <ToolTip>
+                                                    <StackPanel MaxWidth="230">
+                                                        <TextBlock Text="Keylogger" FontWeight="Bold" Foreground="{DynamicResource ToolLaunchAccentBrush}" />
+                                                        <Separator Margin="0,4" Background="{DynamicResource SeparatorBrush}" />
+                                                        <TextBlock Text="Opens captured keylogger logs for this client." TextWrapping="Wrap" FontSize="11" />
+                                                        <TextBlock Text="Shortcut: Ctrl+Alt+K" FontSize="10" Foreground="{DynamicResource TextMutedBrush}" Margin="0,5,0,0" />
+                                                    </StackPanel>
+                                                </ToolTip>
+                                            </Button.ToolTip>
+                                        </Button>
+
+                                        <Button Grid.Row="2" Grid.Column="0" Content="📁 File Manager" Command="{Binding QuickFileManagerCommand}" Tag="{Binding QuickFileManagerFeedback}" Style="{StaticResource ToolLaunchActionButtonStyle}" AutomationProperties.Name="Open File Manager">
+                                            <Button.ToolTip>
+                                                <ToolTip>
+                                                    <StackPanel MaxWidth="230">
+                                                        <TextBlock Text="File Manager" FontWeight="Bold" Foreground="{DynamicResource ToolLaunchAccentBrush}" />
+                                                        <Separator Margin="0,4" Background="{DynamicResource SeparatorBrush}" />
+                                                        <TextBlock Text="Browse, upload, download, rename, and delete remote files." TextWrapping="Wrap" FontSize="11" />
+                                                        <TextBlock Text="Shortcut: Ctrl+Alt+F" FontSize="10" Foreground="{DynamicResource TextMutedBrush}" Margin="0,5,0,0" />
+                                                    </StackPanel>
+                                                </ToolTip>
+                                            </Button.ToolTip>
+                                        </Button>
+
+                                        <Button Grid.Row="2" Grid.Column="1" Content="💻 Remote Shell" Command="{Binding QuickRemoteShellCommand}" Tag="{Binding QuickRemoteShellFeedback}" Style="{StaticResource ToolLaunchActionButtonStyle}" AutomationProperties.Name="Open Remote Shell">
+                                            <Button.ToolTip>
+                                                <ToolTip>
+                                                    <StackPanel MaxWidth="230">
+                                                        <TextBlock Text="Remote Shell" FontWeight="Bold" Foreground="{DynamicResource ToolLaunchAccentBrush}" />
+                                                        <Separator Margin="0,4" Background="{DynamicResource SeparatorBrush}" />
+                                                        <TextBlock Text="Opens an interactive command shell on the selected client." TextWrapping="Wrap" FontSize="11" />
+                                                        <TextBlock Text="Shortcut: Ctrl+Alt+S" FontSize="10" Foreground="{DynamicResource TextMutedBrush}" Margin="0,5,0,0" />
+                                                    </StackPanel>
+                                                </ToolTip>
+                                            </Button.ToolTip>
+                                        </Button>
+
+                                        <Button Grid.Row="3" Grid.Column="0" Content="🚀 Remote Exec" Command="{Binding QuickRemoteExecutionCommand}" Tag="{Binding QuickRemoteExecutionFeedback}" Style="{StaticResource ToolLaunchActionButtonStyle}" AutomationProperties.Name="Open Remote File Execution">
+                                            <Button.ToolTip>
+                                                <ToolTip>
+                                                    <StackPanel MaxWidth="230">
+                                                        <TextBlock Text="Remote File Execution" FontWeight="Bold" Foreground="{DynamicResource ToolLaunchAccentBrush}" />
+                                                        <Separator Margin="0,4" Background="{DynamicResource SeparatorBrush}" />
+                                                        <TextBlock Text="Transfer and execute local or web-hosted payloads on the client." TextWrapping="Wrap" FontSize="11" />
+                                                        <TextBlock Text="Shortcut: Ctrl+Alt+X" FontSize="10" Foreground="{DynamicResource TextMutedBrush}" Margin="0,5,0,0" />
+                                                    </StackPanel>
+                                                </ToolTip>
+                                            </Button.ToolTip>
+                                        </Button>
+
+                                        <Button Grid.Row="3" Grid.Column="1" Content="🪟 HVNC" Command="{Binding QuickHvncCommand}" Tag="{Binding QuickHvncFeedback}" Style="{StaticResource ToolLaunchActionButtonStyle}" AutomationProperties.Name="Open Hidden VNC">
+                                            <Button.ToolTip>
+                                                <ToolTip>
+                                                    <StackPanel MaxWidth="230">
+                                                        <TextBlock Text="Hidden VNC (HVNC)" FontWeight="Bold" Foreground="{DynamicResource ToolLaunchAccentBrush}" />
+                                                        <Separator Margin="0,4" Background="{DynamicResource SeparatorBrush}" />
+                                                        <TextBlock Text="Opens the hidden desktop HVNC session window." TextWrapping="Wrap" FontSize="11" />
+                                                        <TextBlock Text="Shortcut: Ctrl+Alt+H" FontSize="10" Foreground="{DynamicResource TextMutedBrush}" Margin="0,5,0,0" />
+                                                    </StackPanel>
+                                                </ToolTip>
+                                            </Button.ToolTip>
+                                        </Button>
+                                    </Grid>
+                                </StackPanel>
+                            </ContentControl>
+
+                            <!-- CARD 3: CLIENT INFORMATION (2-COLUMN METRIC GRID) -->
+                            <ContentControl x:Name="ClientInfoCard" Style="{StaticResource InfoGlassCardStyle}">
+                                <ContentControl.RenderTransform>
+                                    <TranslateTransform x:Name="ClientInfoSlide" Y="0" />
+                                </ContentControl.RenderTransform>
+                                <StackPanel>
+                                    <DockPanel Margin="3,0,3,10">
+                                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                            <TextBlock Text="📊" FontSize="14" Margin="0,0,6,0" VerticalAlignment="Center" />
+                                            <TextBlock Text="CLIENT INFORMATION"
+                                                       FontWeight="Bold"
+                                                       FontSize="12"
+                                                       Foreground="{DynamicResource WindowForegroundBrush}"
+                                                       VerticalAlignment="Center" />
+                                        </StackPanel>
+
+                                        <Border DockPanel.Dock="Right"
+                                                HorizontalAlignment="Right"
+                                                CornerRadius="10"
+                                                Padding="8,2"
+                                                Background="{DynamicResource InfoCellBackgroundBrush}"
+                                                BorderBrush="{DynamicResource BorderBrush}"
+                                                BorderThickness="1">
+                                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                                <Ellipse Width="8" Height="8" Margin="0,0,6,0" VerticalAlignment="Center">
+                                                    <Ellipse.Style>
+                                                        <Style TargetType="Ellipse">
+                                                            <Setter Property="Fill" Value="{DynamicResource TextMutedBrush}" />
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding SelectedClientIsOnline}" Value="True">
+                                                                    <Setter Property="Fill" Value="{DynamicResource SuccessBrush}" />
+                                                                </DataTrigger>
+                                                                <MultiDataTrigger>
+                                                                    <MultiDataTrigger.Conditions>
+                                                                        <Condition Binding="{Binding HasSelectedClient}" Value="True" />
+                                                                        <Condition Binding="{Binding SelectedClientIsOnline}" Value="False" />
+                                                                    </MultiDataTrigger.Conditions>
+                                                                    <Setter Property="Fill" Value="{DynamicResource ErrorBrush}" />
+                                                                </MultiDataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </Ellipse.Style>
+                                                </Ellipse>
+                                                <TextBlock Text="{Binding SelectedClientStatusText}"
+                                                           FontSize="10.5"
+                                                           FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource WindowForegroundBrush}" />
+                                            </StackPanel>
+                                        </Border>
+                                    </DockPanel>
+
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+
+                                        <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource InfoMetricCellStyle}">
+                                            <StackPanel>
+                                                <TextBlock Text="USERNAME" FontSize="9.5" FontWeight="Bold" Foreground="{DynamicResource TextMutedBrush}" />
+                                                <TextBlock Text="{Binding SelectedClientUsername}" FontSize="11.5" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" ToolTip="{Binding SelectedClientUsername}" Margin="0,2,0,0" />
+                                            </StackPanel>
+                                        </Border>
+                                        <Border Grid.Row="0" Grid.Column="1" Style="{StaticResource InfoMetricCellStyle}">
+                                            <StackPanel>
+                                                <TextBlock Text="HOSTNAME" FontSize="9.5" FontWeight="Bold" Foreground="{DynamicResource TextMutedBrush}" />
+                                                <TextBlock Text="{Binding SelectedClientHostname}" FontSize="11.5" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" ToolTip="{Binding SelectedClientHostname}" Margin="0,2,0,0" />
+                                            </StackPanel>
+                                        </Border>
+
+                                        <Border Grid.Row="1" Grid.Column="0" Style="{StaticResource InfoMetricCellStyle}">
+                                            <StackPanel>
+                                                <TextBlock Text="PUBLIC IP" FontSize="9.5" FontWeight="Bold" Foreground="{DynamicResource TextMutedBrush}" />
+                                                <TextBlock Text="{Binding SelectedClientPublicIp}" FontFamily="Consolas" FontSize="11" TextTrimming="CharacterEllipsis" ToolTip="{Binding SelectedClientPublicIp}" Margin="0,2,0,0" />
+                                            </StackPanel>
+                                        </Border>
+                                        <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource InfoMetricCellStyle}">
+                                            <StackPanel>
+                                                <TextBlock Text="ENDPOINT" FontSize="9.5" FontWeight="Bold" Foreground="{DynamicResource TextMutedBrush}" />
+                                                <TextBlock Text="{Binding SelectedClientEndpoint}" FontFamily="Consolas" FontSize="11" TextTrimming="CharacterEllipsis" ToolTip="{Binding SelectedClientEndpoint}" Margin="0,2,0,0" />
+                                            </StackPanel>
+                                        </Border>
+
+                                        <Border Grid.Row="2" Grid.Column="0" Style="{StaticResource InfoMetricCellStyle}">
+                                            <StackPanel>
+                                                <TextBlock Text="COUNTRY" FontSize="9.5" FontWeight="Bold" Foreground="{DynamicResource TextMutedBrush}" />
+                                                <TextBlock Text="{Binding SelectedClientCountry}" FontSize="11.5" TextTrimming="CharacterEllipsis" ToolTip="{Binding SelectedClientCountry}" Margin="0,2,0,0" />
+                                            </StackPanel>
+                                        </Border>
+                                        <Border Grid.Row="2" Grid.Column="1" Style="{StaticResource InfoMetricCellStyle}">
+                                            <StackPanel>
+                                                <TextBlock Text="ACCOUNT TYPE" FontSize="9.5" FontWeight="Bold" Foreground="{DynamicResource TextMutedBrush}" />
+                                                <TextBlock Text="{Binding SelectedClientAccountType}" FontSize="11.5" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" Margin="0,2,0,0" />
+                                            </StackPanel>
+                                        </Border>
+
+                                        <Border Grid.Row="3" Grid.Column="0" Style="{StaticResource InfoMetricCellStyle}">
+                                            <StackPanel>
+                                                <TextBlock Text="OPERATING SYSTEM" FontSize="9.5" FontWeight="Bold" Foreground="{DynamicResource TextMutedBrush}" />
+                                                <TextBlock Text="{Binding SelectedClientOperatingSystem}" FontSize="11" TextTrimming="CharacterEllipsis" ToolTip="{Binding SelectedClientOperatingSystem}" Margin="0,2,0,0" />
+                                            </StackPanel>
+                                        </Border>
+                                        <Border Grid.Row="3" Grid.Column="1" Style="{StaticResource InfoMetricCellStyle}">
+                                            <StackPanel>
+                                                <TextBlock Text="IDENTIFICATION" FontSize="9.5" FontWeight="Bold" Foreground="{DynamicResource TextMutedBrush}" />
+                                                <TextBlock Text="{Binding SelectedClientIdentifiedText}" FontSize="11.5" FontWeight="SemiBold" Margin="0,2,0,0">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Setter Property="Foreground" Value="{DynamicResource WindowForegroundBrush}" />
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding SelectedClientIsIdentified}" Value="True">
+                                                                    <Setter Property="Foreground" Value="{DynamicResource SuccessBrush}" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                            </StackPanel>
+                                        </Border>
+
+                                        <Border Grid.Row="4" Grid.Column="0" Style="{StaticResource InfoMetricCellStyle}">
+                                            <StackPanel>
+                                                <TextBlock Text="CLIENT ID" FontSize="9.5" FontWeight="Bold" Foreground="{DynamicResource TextMutedBrush}" />
+                                                <TextBlock Text="{Binding SelectedClientIdShort}" FontFamily="Consolas" FontSize="11" ToolTip="{Binding SelectedClientId}" Margin="0,2,0,0" />
+                                            </StackPanel>
+                                        </Border>
+                                        <Border Grid.Row="4" Grid.Column="1" Style="{StaticResource InfoMetricCellStyle}">
+                                            <StackPanel>
+                                                <TextBlock Text="TAG / VERSION" FontSize="9.5" FontWeight="Bold" Foreground="{DynamicResource TextMutedBrush}" />
+                                                <TextBlock FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,2,0,0">
+                                                    <Run Text="{Binding SelectedClientTag, Mode=OneWay}" />
+                                                    <Run Text=" · " Foreground="{DynamicResource TextMutedBrush}" />
+                                                    <Run Text="{Binding SelectedClientVersion, Mode=OneWay}" />
+                                                </TextBlock>
+                                            </StackPanel>
+                                        </Border>
+
+                                        <Border Grid.Row="5" Grid.Column="0" Grid.ColumnSpan="2" Style="{StaticResource InfoMetricCellStyle}">
+                                            <DockPanel>
+                                                <TextBlock Text="CONNECTED SINCE" FontSize="9.5" FontWeight="Bold" Foreground="{DynamicResource TextMutedBrush}" VerticalAlignment="Center" />
+                                                <TextBlock DockPanel.Dock="Right" HorizontalAlignment="Right" Text="{Binding SelectedClientConnectedSince}" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource WindowForegroundBrush}" />
+                                            </DockPanel>
+                                        </Border>
+                                    </Grid>
+
+                                    <CheckBox Margin="4,10,4,0"
+                                              IsChecked="{Binding DisablePreview}"
+                                              Foreground="{DynamicResource TextSecondaryBrush}"
+                                              Content="Disable live preview thumbnail" />
+                                </StackPanel>
+                            </ContentControl>
+
+                            <!-- CARD 4: COLLAPSIBLE DEBUG & AUDIT LOG -->
+                            <ContentControl Style="{StaticResource InfoGlassCardStyle}" Margin="0">
+                                <Expander IsExpanded="False" Foreground="{DynamicResource WindowForegroundBrush}">
+                                    <Expander.Header>
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="🔍 Debug &amp; Audit Log" FontWeight="Bold" FontSize="11.5" Foreground="{DynamicResource WindowForegroundBrush}" />
+                                            <TextBlock Text="{Binding DebugLogs.Count, StringFormat=' ({0})'}" FontSize="11" Foreground="{DynamicResource TextMutedBrush}" Margin="4,0,0,0" />
+                                        </StackPanel>
+                                    </Expander.Header>
+                                    <StackPanel Margin="0,8,0,0">
+                                        <DockPanel Margin="0,0,0,6">
+                                            <TextBlock Text="Recent operator actions and server events" FontSize="10.5" Foreground="{DynamicResource TextMutedBrush}" VerticalAlignment="Center" />
+                                            <Button DockPanel.Dock="Right" Content="Clear" Command="{Binding ClearDebugLogsCommand}" Style="{StaticResource SecondaryCompactButtonStyle}" Padding="8,2" MinHeight="22" FontSize="10" HorizontalAlignment="Right" />
+                                        </DockPanel>
+                                        <ListBox ItemsSource="{Binding DebugLogs}"
+                                                 Height="130"
+                                                 FontFamily="Consolas"
+                                                 FontSize="10.5"
+                                                 Background="{DynamicResource TextBoxBackgroundBrush}"
+                                                 Foreground="{DynamicResource TextSecondaryBrush}"
+                                                 BorderBrush="{DynamicResource BorderBrush}"
+                                                 BorderThickness="1"
+                                                 ScrollViewer.HorizontalScrollBarVisibility="Auto" />
+                                    </StackPanel>
+                                </Expander>
+                            </ContentControl>
+
                         </StackPanel>
-                    </GroupBox>
-                    
-                    <CheckBox Foreground="{DynamicResource TextForeground}">Enable Crypto Clipper</CheckBox>
-                </StackPanel>
+                    </ScrollViewer>
+                </Grid>
             </TabItem>
 
-            <!-- Tab 7: Auto Tasks -->
-            <TabItem Header="Auto Tasks">
-                <Grid Background="{DynamicResource PanelBackground}">
+            <!-- ========================================================= -->
+            <!-- TAB 2: LIVE ANALYTICS STATS VIEW                          -->
+            <!-- ========================================================= -->
+            <TabItem Header="Stats">
+                <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Margin="8" CornerRadius="8" ClipToBounds="True">
+                    <controlsWpf:StatsView x:Name="StatsPanelView" />
+                </Border>
+            </TabItem>
+
+            <!-- ========================================================= -->
+            <!-- TAB 3: OFFLINE CLIENTS (STRUCTURED DATAGRID)              -->
+            <!-- ========================================================= -->
+            <TabItem Header="Offline Clients">
+                <Grid Background="{DynamicResource WindowBackgroundBrush}" Margin="8">
                     <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
-                    
-                    <ListBox Grid.Row="0" Foreground="{DynamicResource TextForeground}" Margin="4">
-                        <ListBoxItem>Task 1</ListBoxItem>
-                    </ListBox>
-                    
-                    <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="4">
-                        <Button Content="Add Task" Margin="2" Padding="8"
-                                Background="{DynamicResource ButtonBackground}"
-                                Foreground="{DynamicResource TextForeground}" />
-                        <Button Content="Delete Task" Margin="2" Padding="8"
-                                Background="{DynamicResource ButtonBackground}"
-                                Foreground="{DynamicResource TextForeground}" />
+
+                    <DockPanel Grid.Row="0" Margin="4,4,4,8">
+                        <TextBlock Text="{Binding OfflineClients.Count, StringFormat='Persisted Client Records ({0})'}"
+                                   Foreground="{DynamicResource WindowForegroundBrush}"
+                                   FontSize="13"
+                                   FontWeight="Bold"
+                                   VerticalAlignment="Center" />
+                        <Button DockPanel.Dock="Right"
+                                Content="↻ Refresh"
+                                Command="{Binding RefreshOfflineClientsCommand}"
+                                Style="{StaticResource SecondaryCompactButtonStyle}"
+                                HorizontalAlignment="Right" />
+                    </DockPanel>
+
+                    <Border Grid.Row="1"
+                            Background="{DynamicResource PanelBackgroundBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            ClipToBounds="True">
+                        <DataGrid ItemsSource="{Binding OfflineClients}"
+                                  SelectedItem="{Binding SelectedOfflineClient}"
+                                  AutoGenerateColumns="False"
+                                  CanUserAddRows="False"
+                                  CanUserDeleteRows="False"
+                                  IsReadOnly="True"
+                                  SelectionMode="Single">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="User@PC" Binding="{Binding UserAtPc}" Width="180" />
+                                <DataGridTextColumn Header="Public IP" Binding="{Binding PublicIP}" Width="130" />
+                                <DataGridTextColumn Header="Country" Binding="{Binding Country}" Width="130" />
+                                <DataGridTextColumn Header="OS" Binding="{Binding OperatingSystem}" Width="170" />
+                                <DataGridTextColumn Header="Version" Binding="{Binding Version}" Width="90" />
+                                <DataGridTextColumn Header="Tag" Binding="{Binding Tag}" Width="100" />
+                                <DataGridTextColumn Header="Last Seen (UTC)" Binding="{Binding LastSeenUtc, StringFormat='{}{0:yyyy-MM-dd HH:mm}'}" Width="135" />
+                                <DataGridTextColumn Header="Client ID" Binding="{Binding ClientId}" Width="*" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Border>
+
+                    <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,10,0,0">
+                        <Button Content="Delete Selected"
+                                Command="{Binding DeleteSelectedOfflineClientCommand}"
+                                Style="{StaticResource SecondaryCompactButtonStyle}"
+                                Margin="0,0,8,0" />
+                        <Button Content="Clear All Offline"
+                                Command="{Binding ClearOfflineClientsCommand}"
+                                Style="{StaticResource SystemControlActionButtonStyle}"
+                                Margin="0" />
+                    </StackPanel>
+                </Grid>
+            </TabItem>
+
+            <!-- ========================================================= -->
+            <!-- TAB 4: LIVE GEO HEAT MAP VIEW                             -->
+            <!-- ========================================================= -->
+            <TabItem Header="Heat Map">
+                <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Margin="8" CornerRadius="8" ClipToBounds="True">
+                    <controlsWpf:HeatMapView x:Name="HeatMapPanelView" />
+                </Border>
+            </TabItem>
+
+            <!-- ========================================================= -->
+            <!-- TAB 5: NOTIFICATIONS CENTRE (PERSISTED)                   -->
+            <!-- ========================================================= -->
+            <TabItem Header="Notifications">
+                <Grid Background="{DynamicResource WindowBackgroundBrush}" Margin="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <DockPanel Grid.Row="0" Margin="4,4,4,8">
+                        <TextBlock Text="{Binding NotificationStatusText}"
+                                   Foreground="{DynamicResource WindowForegroundBrush}"
+                                   FontSize="12.5"
+                                   FontWeight="Bold"
+                                   VerticalAlignment="Center" />
+                        <Button DockPanel.Dock="Right"
+                                Content="Mark All Read"
+                                Command="{Binding MarkAllNotificationsReadCommand}"
+                                Style="{StaticResource SecondaryCompactButtonStyle}"
+                                HorizontalAlignment="Right" />
+                    </DockPanel>
+
+                    <Border Grid.Row="1"
+                            Background="{DynamicResource PanelBackgroundBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            ClipToBounds="True">
+                        <DataGrid ItemsSource="{Binding Notifications}"
+                                  SelectedItem="{Binding SelectedNotification}"
+                                  AutoGenerateColumns="False"
+                                  CanUserAddRows="False"
+                                  CanUserDeleteRows="False"
+                                  IsReadOnly="True"
+                                  SelectionMode="Single">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Timestamp" Binding="{Binding Timestamp, StringFormat='{}{0:yyyy-MM-dd HH:mm:ss}'}" Width="155" />
+                                <DataGridTextColumn Header="Client" Binding="{Binding Client}" Width="180" />
+                                <DataGridTextColumn Header="Event" Binding="{Binding Event}" Width="180" />
+                                <DataGridTextColumn Header="Details" Binding="{Binding Parameter}" Width="*" />
+                                <DataGridCheckBoxColumn Header="Read" Binding="{Binding IsRead}" Width="64" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Border>
+
+                    <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,10,0,0">
+                        <Button Content="Manage Keywords"
+                                Command="{Binding OpenKeywordsCommand}"
+                                Style="{StaticResource ToolLaunchActionButtonStyle}"
+                                Margin="0,0,8,0" />
+                        <Button Content="Clear Selected"
+                                Command="{Binding ClearSelectedNotificationCommand}"
+                                Style="{StaticResource SecondaryCompactButtonStyle}"
+                                Margin="0,0,8,0" />
+                        <Button Content="Clear All"
+                                Command="{Binding ClearAllNotificationsCommand}"
+                                Style="{StaticResource SystemControlActionButtonStyle}"
+                                Margin="0" />
+                    </StackPanel>
+                </Grid>
+            </TabItem>
+
+            <!-- ========================================================= -->
+            <!-- TAB 6: CRYPTO CLIPPER (BOUND & PERSISTED)                 -->
+            <!-- ========================================================= -->
+            <TabItem Header="Crypto">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Background="{DynamicResource WindowBackgroundBrush}">
+                    <StackPanel Margin="16" MaxWidth="760" HorizontalAlignment="Left">
+                        <ContentControl Style="{StaticResource InfoGlassCardStyle}">
+                            <StackPanel>
+                                <TextBlock Text="💰 CRYPTO CLIPPER ADDRESSES"
+                                           FontWeight="Bold"
+                                           FontSize="13"
+                                           Foreground="{DynamicResource WindowForegroundBrush}"
+                                           Margin="0,0,0,12" />
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="125" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+
+                                    <TextBlock Text="Bitcoin (BTC):" Grid.Row="0" Grid.Column="0" VerticalAlignment="Center" Margin="0,4" Foreground="{DynamicResource TextSecondaryBrush}" />
+                                    <TextBox Grid.Row="0" Grid.Column="1" Margin="4" FontFamily="Consolas" Text="{Binding BitcoinAddress, UpdateSourceTrigger=PropertyChanged}" />
+
+                                    <TextBlock Text="Ethereum (ETH):" Grid.Row="1" Grid.Column="0" VerticalAlignment="Center" Margin="0,4" Foreground="{DynamicResource TextSecondaryBrush}" />
+                                    <TextBox Grid.Row="1" Grid.Column="1" Margin="4" FontFamily="Consolas" Text="{Binding EthereumAddress, UpdateSourceTrigger=PropertyChanged}" />
+
+                                    <TextBlock Text="Litecoin (LTC):" Grid.Row="2" Grid.Column="0" VerticalAlignment="Center" Margin="0,4" Foreground="{DynamicResource TextSecondaryBrush}" />
+                                    <TextBox Grid.Row="2" Grid.Column="1" Margin="4" FontFamily="Consolas" Text="{Binding LitecoinAddress, UpdateSourceTrigger=PropertyChanged}" />
+
+                                    <TextBlock Text="Monero (XMR):" Grid.Row="3" Grid.Column="0" VerticalAlignment="Center" Margin="0,4" Foreground="{DynamicResource TextSecondaryBrush}" />
+                                    <TextBox Grid.Row="3" Grid.Column="1" Margin="4" FontFamily="Consolas" Text="{Binding MoneroAddress, UpdateSourceTrigger=PropertyChanged}" />
+
+                                    <TextBlock Text="Solana (SOL):" Grid.Row="4" Grid.Column="0" VerticalAlignment="Center" Margin="0,4" Foreground="{DynamicResource TextSecondaryBrush}" />
+                                    <TextBox Grid.Row="4" Grid.Column="1" Margin="4" FontFamily="Consolas" Text="{Binding SolanaAddress, UpdateSourceTrigger=PropertyChanged}" />
+
+                                    <TextBlock Text="Dash (DASH):" Grid.Row="5" Grid.Column="0" VerticalAlignment="Center" Margin="0,4" Foreground="{DynamicResource TextSecondaryBrush}" />
+                                    <TextBox Grid.Row="5" Grid.Column="1" Margin="4" FontFamily="Consolas" Text="{Binding DashAddress, UpdateSourceTrigger=PropertyChanged}" />
+
+                                    <TextBlock Text="XRP (XRP):" Grid.Row="6" Grid.Column="0" VerticalAlignment="Center" Margin="0,4" Foreground="{DynamicResource TextSecondaryBrush}" />
+                                    <TextBox Grid.Row="6" Grid.Column="1" Margin="4" FontFamily="Consolas" Text="{Binding XrpAddress, UpdateSourceTrigger=PropertyChanged}" />
+
+                                    <TextBlock Text="Tron (TRX):" Grid.Row="7" Grid.Column="0" VerticalAlignment="Center" Margin="0,4" Foreground="{DynamicResource TextSecondaryBrush}" />
+                                    <TextBox Grid.Row="7" Grid.Column="1" Margin="4" FontFamily="Consolas" Text="{Binding TronAddress, UpdateSourceTrigger=PropertyChanged}" />
+
+                                    <TextBlock Text="Bitcoin Cash (BCH):" Grid.Row="8" Grid.Column="0" VerticalAlignment="Center" Margin="0,4" Foreground="{DynamicResource TextSecondaryBrush}" />
+                                    <TextBox Grid.Row="8" Grid.Column="1" Margin="4" FontFamily="Consolas" Text="{Binding BitcoinCashAddress, UpdateSourceTrigger=PropertyChanged}" />
+                                </Grid>
+
+                                <DockPanel Margin="4,14,4,0">
+                                    <CheckBox IsChecked="{Binding CryptoClipperEnabled}"
+                                              Foreground="{DynamicResource WindowForegroundBrush}"
+                                              VerticalAlignment="Center"
+                                              Content="Enable Crypto Clipper" />
+                                    <Button DockPanel.Dock="Right"
+                                            Content="💾 Save Configuration"
+                                            Command="{Binding SaveCryptoConfigurationCommand}"
+                                            Style="{StaticResource ToolLaunchActionButtonStyle}"
+                                            HorizontalAlignment="Right"
+                                            Margin="0" />
+                                </DockPanel>
+                            </StackPanel>
+                        </ContentControl>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ========================================================= -->
+            <!-- TAB 7: AUTO TASKS (STRUCTURED DATAGRID & PERSISTED)       -->
+            <!-- ========================================================= -->
+            <TabItem Header="Auto Tasks">
+                <Grid Background="{DynamicResource WindowBackgroundBrush}" Margin="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Grid.Row="0"
+                               Text="{Binding AutoTasks.Count, StringFormat='Configured Auto Tasks ({0})'}"
+                               Foreground="{DynamicResource WindowForegroundBrush}"
+                               FontSize="13"
+                               FontWeight="Bold"
+                               Margin="4,4,4,8" />
+
+                    <Border Grid.Row="1"
+                            Background="{DynamicResource PanelBackgroundBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            ClipToBounds="True">
+                        <DataGrid ItemsSource="{Binding AutoTasks}"
+                                  SelectedItem="{Binding SelectedAutoTask}"
+                                  AutoGenerateColumns="False"
+                                  CanUserAddRows="False"
+                                  CanUserDeleteRows="False"
+                                  IsReadOnly="True"
+                                  SelectionMode="Single">
+                            <DataGrid.Columns>
+                                <DataGridTextColumn Header="Action" Binding="{Binding Title}" Width="200" />
+                                <DataGridTextColumn Header="Parameter 1" Binding="{Binding Param1}" Width="*" />
+                                <DataGridTextColumn Header="Parameter 2" Binding="{Binding Param2}" Width="*" />
+                                <DataGridTextColumn Header="Execution Mode" Binding="{Binding ExecutionMode}" Width="145" />
+                            </DataGrid.Columns>
+                        </DataGrid>
+                    </Border>
+
+                    <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,10,0,0">
+                        <Button Content="+ Add Task"
+                                Command="{Binding AddAutoTaskCommand}"
+                                Style="{StaticResource ToolLaunchActionButtonStyle}"
+                                Margin="0,0,8,0" />
+                        <Button Content="Delete Selected"
+                                Command="{Binding DeleteSelectedAutoTaskCommand}"
+                                Style="{StaticResource SystemControlActionButtonStyle}"
+                                Margin="0" />
                     </StackPanel>
                 </Grid>
             </TabItem>
         </TabControl>
 
-        <!-- Status Bar -->
-        <StatusBar Grid.Row="2" Background="{DynamicResource StatusBarBackground}">
+        <!-- Bound Status Bar -->
+        <StatusBar Grid.Row="2"
+                   Background="{DynamicResource StatusBarBackgroundBrush}"
+                   Foreground="{DynamicResource WindowForegroundBrush}"
+                   BorderBrush="{DynamicResource BorderBrush}"
+                   BorderThickness="0,1,0,0"
+                   Padding="8,3">
             <StatusBarItem>
-                <TextBlock Text="Listening..." Foreground="{DynamicResource TextForeground}" />
+                <TextBlock Text="{Binding ListeningStatus}"
+                           Foreground="{DynamicResource TextSecondaryBrush}"
+                           FontSize="11" />
             </StatusBarItem>
-            <Separator />
+            <Separator Background="{DynamicResource SeparatorBrush}" />
             <StatusBarItem>
-                <TextBlock Text="Connected: 0" Foreground="{DynamicResource TextForeground}" />
+                <TextBlock Text="{Binding ConnectedClientCount, StringFormat='Connected: {0}'}"
+                           Foreground="{DynamicResource WindowForegroundBrush}"
+                           FontWeight="SemiBold"
+                           FontSize="11" />
+            </StatusBarItem>
+            <Separator Background="{DynamicResource SeparatorBrush}" />
+            <StatusBarItem>
+                <TextBlock Text="{Binding NotificationStatusText}"
+                           Foreground="{DynamicResource TextMutedBrush}"
+                           FontSize="11" />
             </StatusBarItem>
         </StatusBar>
     </Grid>

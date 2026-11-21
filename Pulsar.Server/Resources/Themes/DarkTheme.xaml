@@ -2,46 +2,143 @@
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
     <!-- Background and Foreground Colors -->
-    <Color x:Key="PrimaryBackgroundColor">#1E1E1E</Color>
-    <Color x:Key="PrimaryForegroundColor">#FFFFFF</Color>
-    <Color x:Key="SecondaryBackgroundColor">#2D2D2D</Color>
-    <Color x:Key="SecondaryForegroundColor">#E0E0E0</Color>
-    <Color x:Key="AccentColor">#007ACC</Color>
-    <Color x:Key="AccentDarkColor">#005A9E</Color>
+    <Color x:Key="PrimaryBackgroundColor">#14161B</Color>
+    <Color x:Key="PrimaryForegroundColor">#F3F5F8</Color>
+    <Color x:Key="SecondaryBackgroundColor">#1B1E26</Color>
+    <Color x:Key="SecondaryForegroundColor">#CFD5DF</Color>
+    <Color x:Key="AccentColor">#3B82F6</Color>
+    <Color x:Key="AccentDarkColor">#2563EB</Color>
 
-    <!-- Brushes (derived from colors) -->
+    <!-- Core Surface Brushes -->
     <SolidColorBrush x:Key="WindowBackgroundBrush" Color="{StaticResource PrimaryBackgroundColor}" />
     <SolidColorBrush x:Key="WindowForegroundBrush" Color="{StaticResource PrimaryForegroundColor}" />
     <SolidColorBrush x:Key="PanelBackgroundBrush" Color="{StaticResource SecondaryBackgroundColor}" />
     <SolidColorBrush x:Key="PanelForegroundBrush" Color="{StaticResource SecondaryForegroundColor}" />
+    <SolidColorBrush x:Key="MenuBackgroundBrush" Color="#181B22" />
+    <SolidColorBrush x:Key="StatusBarBackgroundBrush" Color="#111318" />
+    <SolidColorBrush x:Key="CardSurfaceBrush" Color="#20242E" />
+    <SolidColorBrush x:Key="CardSubtleBrush" Color="#181B23" />
+    <SolidColorBrush x:Key="TextSecondaryBrush" Color="#B6C0CE" />
+    <SolidColorBrush x:Key="TextMutedBrush" Color="#8892A2" />
     <SolidColorBrush x:Key="AccentBrush" Color="{StaticResource AccentColor}" />
     <SolidColorBrush x:Key="AccentDarkBrush" Color="{StaticResource AccentDarkColor}" />
 
-    <!-- Border and Separator Colors -->
-    <SolidColorBrush x:Key="BorderBrush" Color="#3E3E42" />
-    <SolidColorBrush x:Key="SeparatorBrush" Color="#424245" />
+    <!-- Border and Separator Brushes -->
+    <SolidColorBrush x:Key="BorderBrush" Color="#2E3442" />
+    <SolidColorBrush x:Key="SeparatorBrush" Color="#2D3340" />
 
-    <!-- Control-Specific Colors -->
-    <SolidColorBrush x:Key="ButtonBackgroundBrush" Color="#0E639C" />
-    <SolidColorBrush x:Key="ButtonHoverBackgroundBrush" Color="#1177BB" />
-    <SolidColorBrush x:Key="ButtonPressedBackgroundBrush" Color="#007ACC" />
-    <SolidColorBrush x:Key="ButtonDisabledBackgroundBrush" Color="#2D2D30" />
-    <SolidColorBrush x:Key="ButtonDisabledForegroundBrush" Color="#808080" />
+    <!-- Standard Button Brushes -->
+    <SolidColorBrush x:Key="ButtonBackgroundBrush" Color="#2563EB" />
+    <SolidColorBrush x:Key="ButtonHoverBackgroundBrush" Color="#3B82F6" />
+    <SolidColorBrush x:Key="ButtonPressedBackgroundBrush" Color="#1D4ED8" />
+    <SolidColorBrush x:Key="ButtonDisabledBackgroundBrush" Color="#252932" />
+    <SolidColorBrush x:Key="ButtonDisabledForegroundBrush" Color="#6F7785" />
+    <SolidColorBrush x:Key="SecondaryButtonBackgroundBrush" Color="#262B36" />
+    <SolidColorBrush x:Key="SecondaryButtonHoverBackgroundBrush" Color="#313847" />
+    <SolidColorBrush x:Key="SecondaryButtonPressedBackgroundBrush" Color="#1E222B" />
+
+    <!-- System Control: Red Glass Morphism Tokens -->
+    <LinearGradientBrush x:Key="SystemControlGlassBackground" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Color="#30DC2626" Offset="0" />
+        <GradientStop Color="#1F991B1B" Offset="0.55" />
+        <GradientStop Color="#187F1D1D" Offset="1" />
+    </LinearGradientBrush>
+    <SolidColorBrush x:Key="SystemControlGlassBorder" Color="#6EF87171" />
+    <LinearGradientBrush x:Key="SystemControlGlassHighlight" StartPoint="0,0" EndPoint="1,0">
+        <GradientStop Color="#14FFFFFF" Offset="0" />
+        <GradientStop Color="#52FCA5A5" Offset="0.5" />
+        <GradientStop Color="#14FFFFFF" Offset="1" />
+    </LinearGradientBrush>
+    <SolidColorBrush x:Key="SystemControlAccentBrush" Color="#FF7B7B" />
+    <SolidColorBrush x:Key="SystemControlSubtitleBrush" Color="#E6B8B8" />
+    <Color x:Key="SystemControlShadowColor">#B91C1C</Color>
+
+    <LinearGradientBrush x:Key="SystemControlButtonBackground" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#59B91C1C" Offset="0" />
+        <GradientStop Color="#477F1D1D" Offset="1" />
+    </LinearGradientBrush>
+    <LinearGradientBrush x:Key="SystemControlButtonHoverBackground" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#85DC2626" Offset="0" />
+        <GradientStop Color="#6B991B1B" Offset="1" />
+    </LinearGradientBrush>
+    <LinearGradientBrush x:Key="SystemControlButtonPressedBackground" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#997F1D1D" Offset="0" />
+        <GradientStop Color="#A8450A0A" Offset="1" />
+    </LinearGradientBrush>
+    <SolidColorBrush x:Key="SystemControlButtonBorderBrush" Color="#75F87171" />
+    <SolidColorBrush x:Key="SystemControlButtonForegroundBrush" Color="#FFFFFF" />
+
+    <LinearGradientBrush x:Key="SystemControlCriticalButtonBackground" StartPoint="0,0" EndPoint="1,0">
+        <GradientStop Color="#99B91C1C" Offset="0" />
+        <GradientStop Color="#887F1D1D" Offset="1" />
+    </LinearGradientBrush>
+    <LinearGradientBrush x:Key="SystemControlCriticalButtonHoverBackground" StartPoint="0,0" EndPoint="1,0">
+        <GradientStop Color="#CCDC2626" Offset="0" />
+        <GradientStop Color="#B8991B1B" Offset="1" />
+    </LinearGradientBrush>
+    <SolidColorBrush x:Key="SystemControlCriticalButtonBorderBrush" Color="#BFFCA5A5" />
+
+    <!-- Tool Launch: Blue Glass Morphism Tokens -->
+    <LinearGradientBrush x:Key="ToolLaunchGlassBackground" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Color="#2B3B82F6" Offset="0" />
+        <GradientStop Color="#1C1D4ED8" Offset="0.55" />
+        <GradientStop Color="#141E3A8A" Offset="1" />
+    </LinearGradientBrush>
+    <SolidColorBrush x:Key="ToolLaunchGlassBorder" Color="#6660A5FA" />
+    <LinearGradientBrush x:Key="ToolLaunchGlassHighlight" StartPoint="0,0" EndPoint="1,0">
+        <GradientStop Color="#14FFFFFF" Offset="0" />
+        <GradientStop Color="#4D93C5FD" Offset="0.5" />
+        <GradientStop Color="#14FFFFFF" Offset="1" />
+    </LinearGradientBrush>
+    <SolidColorBrush x:Key="ToolLaunchAccentBrush" Color="#60A5FA" />
+    <SolidColorBrush x:Key="ToolLaunchSubtitleBrush" Color="#BFDBFE" />
+    <Color x:Key="ToolLaunchShadowColor">#1D4ED8</Color>
+
+    <LinearGradientBrush x:Key="ToolLaunchButtonBackground" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#522563EB" Offset="0" />
+        <GradientStop Color="#401E3A8A" Offset="1" />
+    </LinearGradientBrush>
+    <LinearGradientBrush x:Key="ToolLaunchButtonHoverBackground" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#803B82F6" Offset="0" />
+        <GradientStop Color="#661D4ED8" Offset="1" />
+    </LinearGradientBrush>
+    <LinearGradientBrush x:Key="ToolLaunchButtonPressedBackground" StartPoint="0,0" EndPoint="0,1">
+        <GradientStop Color="#991E40AF" Offset="0" />
+        <GradientStop Color="#A8172554" Offset="1" />
+    </LinearGradientBrush>
+    <SolidColorBrush x:Key="ToolLaunchButtonBorderBrush" Color="#7093C5FD" />
+    <SolidColorBrush x:Key="ToolLaunchButtonForegroundBrush" Color="#FFFFFF" />
+
+    <!-- Info Card Glass Tokens -->
+    <LinearGradientBrush x:Key="InfoCardGlassBackground" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Color="#E6212631" Offset="0" />
+        <GradientStop Color="#E61A1E27" Offset="1" />
+    </LinearGradientBrush>
+    <SolidColorBrush x:Key="InfoCardBorderBrush" Color="#353D4F" />
+    <SolidColorBrush x:Key="InfoCellBackgroundBrush" Color="#181C24" />
+    <Color x:Key="CardShadowColor">#000000</Color>
 
     <!-- TextBox and Input Colors -->
-    <SolidColorBrush x:Key="TextBoxBackgroundBrush" Color="#3C3C3C" />
-    <SolidColorBrush x:Key="TextBoxBorderBrush" Color="#464646" />
-    <SolidColorBrush x:Key="TextBoxForegroundBrush" Color="#CCCCCC" />
+    <SolidColorBrush x:Key="TextBoxBackgroundBrush" Color="#171A21" />
+    <SolidColorBrush x:Key="TextBoxBorderBrush" Color="#374052" />
+    <SolidColorBrush x:Key="TextBoxForegroundBrush" Color="#F3F5F8" />
+
+    <!-- Tooltip Colors -->
+    <SolidColorBrush x:Key="ToolTipBackgroundBrush" Color="#13161D" />
+    <SolidColorBrush x:Key="ToolTipBorderBrush" Color="#3B4457" />
 
     <!-- Selection and Highlight Colors -->
-    <SolidColorBrush x:Key="SelectionBackgroundBrush" Color="#094771" />
+    <SolidColorBrush x:Key="SelectionBackgroundBrush" Color="#1E3A5F" />
     <SolidColorBrush x:Key="SelectionForegroundBrush" Color="#FFFFFF" />
-    <SolidColorBrush x:Key="InactiveSelectionBackgroundBrush" Color="#2D2D30" />
+    <SolidColorBrush x:Key="InactiveSelectionBackgroundBrush" Color="#282E3A" />
 
     <!-- Message and Status Colors -->
-    <SolidColorBrush x:Key="SuccessBrush" Color="#00AA00" />
-    <SolidColorBrush x:Key="WarningBrush" Color="#FFAA00" />
-    <SolidColorBrush x:Key="ErrorBrush" Color="#FF5555" />
-    <SolidColorBrush x:Key="InfoBrush" Color="#00CCFF" />
+    <SolidColorBrush x:Key="SuccessBrush" Color="#22C55E" />
+    <SolidColorBrush x:Key="WarningBrush" Color="#F59E0B" />
+    <SolidColorBrush x:Key="ErrorBrush" Color="#EF4444" />
+    <SolidColorBrush x:Key="InfoBrush" Color="#38BDF8" />
+    <SolidColorBrush x:Key="FeedbackSuccessBackground" Color="#2B22C55E" />
+    <SolidColorBrush x:Key="FeedbackErrorBackground" Color="#33EF4444" />
+    <SolidColorBrush x:Key="FeedbackInfoBackground" Color="#2B38BDF8" />
 
 </ResourceDictionary>
