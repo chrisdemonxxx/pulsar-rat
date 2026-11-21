@@ -1,0 +1,280 @@
+<Window x:Class="Pulsar.Server.Views.PulsarMainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:Pulsar.Server.Views"
+        xmlns:controls="clr-namespace:Pulsar.Server.Controls"
+        xmlns:controlsWpf="clr-namespace:Pulsar.Server.Controls.Wpf"
+        mc:Ignorable="d"
+        Title="Pulsar Premium"
+        Width="1400"
+        Height="900"
+        WindowStartupLocation="CenterScreen"
+        Style="{StaticResource PulsarWindowStyle}"
+        Background="{DynamicResource WindowBackground}">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <!-- Menu Bar -->
+            <RowDefinition Height="*" />
+            <!-- Main Content -->
+            <RowDefinition Height="Auto" />
+            <!-- Status Bar -->
+        </Grid.RowDefinitions>
+
+        <!-- Menu Bar -->
+        <Menu Grid.Row="0" Background="{DynamicResource MenuBackground}">
+            <MenuItem Header="Clients">
+                <MenuItem Header="Offline Clients">
+                    <MenuItem Header="Clear Offline Clients" Command="{Binding ClearOfflineClientsCommand}" />
+                </MenuItem>
+            </MenuItem>
+            <MenuItem Header="Stats" />
+            <MenuItem Header="Map" />
+            <MenuItem Header="Auto Tasks" />
+            <MenuItem Header="Crypto Clipper" />
+            <MenuItem Header="Notifications Centre" />
+            <MenuItem Header="About" />
+            <MenuItem Header="Settings" />
+            <MenuItem Header="Builder" />
+            <MenuItem Header="Delete Temp Directory" />
+        </Menu>
+
+        <!-- Main Tab Control -->
+        <TabControl Grid.Row="1" 
+                    Background="{DynamicResource PanelBackground}"
+                    Foreground="{DynamicResource TextForeground}">
+            
+            <!-- Tab 1: Online Clients -->
+            <TabItem Header="Clients">
+                <Grid Background="{DynamicResource PanelBackground}">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="2*" />
+                        <ColumnDefinition Width="1*" />
+                    </Grid.ColumnDefinitions>
+                    
+                    <!-- Clients List (placeholder for wpfClientsHost) -->
+                    <Border Grid.Column="0" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Margin="4">
+                        <TextBlock Text="Clients List (WPF Host Placeholder)" 
+                                   VerticalAlignment="Center" 
+                                   HorizontalAlignment="Center"
+                                   Foreground="{DynamicResource TextForeground}" />
+                    </Border>
+                    
+                    <!-- Client Info Panel -->
+                    <StackPanel Grid.Column="1" Margin="4">
+                        <TextBlock Text="Clients Info" 
+                                   FontWeight="Bold" 
+                                   Foreground="{DynamicResource AccentColor}"
+                                   Margin="0,0,0,8" />
+                        
+                        <!-- Quick Action Buttons -->
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            
+                            <Button Grid.Row="0" Grid.Column="0" Content="📞 Microphone" Margin="2" Padding="8" 
+                                    Command="{Binding QuickMicrophoneCommand}"
+                                    Background="{DynamicResource ButtonBackground}"
+                                    Foreground="{DynamicResource TextForeground}" />
+                            <Button Grid.Row="0" Grid.Column="1" Content="🖥️ Remote Desktop" Margin="2" Padding="8"
+                                    Command="{Binding QuickRemoteDesktopCommand}"
+                                    Background="{DynamicResource ButtonBackground}"
+                                    Foreground="{DynamicResource TextForeground}" />
+                            
+                            <Button Grid.Row="1" Grid.Column="0" Content="📷 Webcam" Margin="2" Padding="8"
+                                    Command="{Binding QuickWebcamCommand}"
+                                    Background="{DynamicResource ButtonBackground}"
+                                    Foreground="{DynamicResource TextForeground}" />
+                            <Button Grid.Row="1" Grid.Column="1" Content="⌨️ Keylogger" Margin="2" Padding="8"
+                                    Command="{Binding QuickKeyloggerCommand}"
+                                    Background="{DynamicResource ButtonBackground}"
+                                    Foreground="{DynamicResource TextForeground}" />
+                            
+                            <Button Grid.Row="2" Grid.Column="0" Content="📁 File Manager" Margin="2" Padding="8"
+                                    Command="{Binding QuickFileManagerCommand}"
+                                    Background="{DynamicResource ButtonBackground}"
+                                    Foreground="{DynamicResource TextForeground}" />
+                            <Button Grid.Row="2" Grid.Column="1" Content="💻 Remote Shell" Margin="2" Padding="8"
+                                    Command="{Binding QuickRemoteShellCommand}"
+                                    Background="{DynamicResource ButtonBackground}"
+                                    Foreground="{DynamicResource TextForeground}" />
+                            
+                            <Button Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="2" Content="🔍 File Explorer" Margin="2" Padding="8"
+                                    Command="{Binding QuickFileExplorerCommand}"
+                                    Background="{DynamicResource ButtonBackground}"
+                                    Foreground="{DynamicResource TextForeground}" />
+                        </Grid>
+                        
+                        <!-- Disable Preview Checkbox -->
+                        <CheckBox Margin="0,8,0,8" Foreground="{DynamicResource TextForeground}">Disable Preview</CheckBox>
+                        
+                        <!-- Client Info List -->
+                        <GroupBox Header="Information" Margin="0,8,0,8" Foreground="{DynamicResource TextForeground}">
+                            <ListBox Height="150" Foreground="{DynamicResource TextForeground}">
+                                <ListBoxItem>Client Info 1</ListBoxItem>
+                                <ListBoxItem>Client Info 2</ListBoxItem>
+                            </ListBox>
+                        </GroupBox>
+                        
+                        <!-- Debug Log -->
+                        <TextBlock Text="Debug Log" FontWeight="Bold" Foreground="{DynamicResource AccentColor}" Margin="0,8,0,4" />
+                        <RichTextBox Height="100" Margin="0,0,0,0" Foreground="{DynamicResource TextForeground}" />
+                    </StackPanel>
+                </Grid>
+            </TabItem>
+
+            <!-- Tab 2: Stats -->
+            <TabItem Header="Stats">
+                <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Margin="4">
+                    <TextBlock Text="Stats Panel (StatsElementHost Placeholder)" 
+                               VerticalAlignment="Center" 
+                               HorizontalAlignment="Center"
+                               Foreground="{DynamicResource TextForeground}" />
+                </Border>
+            </TabItem>
+
+            <!-- Tab 3: Offline Clients -->
+            <TabItem Header="Offline Clients">
+                <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Margin="4">
+                    <TextBlock Text="Offline Clients List (AeroListView Placeholder)" 
+                               VerticalAlignment="Center" 
+                               HorizontalAlignment="Center"
+                               Foreground="{DynamicResource TextForeground}" />
+                </Border>
+            </TabItem>
+
+            <!-- Tab 4: Heat Map -->
+            <TabItem Header="Heat Map">
+                <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Margin="4">
+                    <TextBlock Text="Heat Map (HeatMapElementHost Placeholder)" 
+                               VerticalAlignment="Center" 
+                               HorizontalAlignment="Center"
+                               Foreground="{DynamicResource TextForeground}" />
+                </Border>
+            </TabItem>
+
+            <!-- Tab 5: Notifications -->
+            <TabItem Header="Notifications">
+                <Grid Background="{DynamicResource PanelBackground}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    
+                    <ListBox Grid.Row="0" Foreground="{DynamicResource TextForeground}" Margin="4">
+                        <ListBoxItem>Notification 1</ListBoxItem>
+                    </ListBox>
+                    
+                    <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="4">
+                        <Button Content="Add Keywords" Margin="2" Padding="8" 
+                                Background="{DynamicResource ButtonBackground}"
+                                Foreground="{DynamicResource TextForeground}" />
+                        <Button Content="Clear Selected" Margin="2" Padding="8"
+                                Background="{DynamicResource ButtonBackground}"
+                                Foreground="{DynamicResource TextForeground}" />
+                        <Button Content="Clear All" Margin="2" Padding="8"
+                                Background="{DynamicResource ButtonBackground}"
+                                Foreground="{DynamicResource TextForeground}" />
+                    </StackPanel>
+                </Grid>
+            </TabItem>
+
+            <!-- Tab 6: Crypto -->
+            <TabItem Header="Crypto">
+                <StackPanel Margin="16" Background="{DynamicResource PanelBackground}">
+                    <GroupBox Header="Crypto Addresses" Foreground="{DynamicResource TextForeground}" Margin="0,0,0,8">
+                        <StackPanel>
+                            <Grid Margin="4">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                
+                                <TextBlock Text="Bitcoin:" Grid.Row="0" Grid.Column="0" Margin="0,4" Foreground="{DynamicResource TextForeground}" />
+                                <TextBox Grid.Row="0" Grid.Column="1" Margin="4" Foreground="{DynamicResource TextForeground}" />
+                                
+                                <TextBlock Text="Ethereum:" Grid.Row="1" Grid.Column="0" Margin="0,4" Foreground="{DynamicResource TextForeground}" />
+                                <TextBox Grid.Row="1" Grid.Column="1" Margin="4" Foreground="{DynamicResource TextForeground}" />
+                                
+                                <TextBlock Text="Litecoin:" Grid.Row="2" Grid.Column="0" Margin="0,4" Foreground="{DynamicResource TextForeground}" />
+                                <TextBox Grid.Row="2" Grid.Column="1" Margin="4" Foreground="{DynamicResource TextForeground}" />
+                                
+                                <TextBlock Text="Monero:" Grid.Row="3" Grid.Column="0" Margin="0,4" Foreground="{DynamicResource TextForeground}" />
+                                <TextBox Grid.Row="3" Grid.Column="1" Margin="4" Foreground="{DynamicResource TextForeground}" />
+                                
+                                <TextBlock Text="Solana:" Grid.Row="4" Grid.Column="0" Margin="0,4" Foreground="{DynamicResource TextForeground}" />
+                                <TextBox Grid.Row="4" Grid.Column="1" Margin="4" Foreground="{DynamicResource TextForeground}" />
+                                
+                                <TextBlock Text="Dash:" Grid.Row="5" Grid.Column="0" Margin="0,4" Foreground="{DynamicResource TextForeground}" />
+                                <TextBox Grid.Row="5" Grid.Column="1" Margin="4" Foreground="{DynamicResource TextForeground}" />
+                                
+                                <TextBlock Text="XRP:" Grid.Row="6" Grid.Column="0" Margin="0,4" Foreground="{DynamicResource TextForeground}" />
+                                <TextBox Grid.Row="6" Grid.Column="1" Margin="4" Foreground="{DynamicResource TextForeground}" />
+                                
+                                <TextBlock Text="Bitcoin Cash:" Grid.Row="7" Grid.Column="0" Margin="0,4" Foreground="{DynamicResource TextForeground}" />
+                                <TextBox Grid.Row="7" Grid.Column="1" Margin="4" Foreground="{DynamicResource TextForeground}" />
+                            </Grid>
+                        </StackPanel>
+                    </GroupBox>
+                    
+                    <CheckBox Foreground="{DynamicResource TextForeground}">Enable Crypto Clipper</CheckBox>
+                </StackPanel>
+            </TabItem>
+
+            <!-- Tab 7: Auto Tasks -->
+            <TabItem Header="Auto Tasks">
+                <Grid Background="{DynamicResource PanelBackground}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    
+                    <ListBox Grid.Row="0" Foreground="{DynamicResource TextForeground}" Margin="4">
+                        <ListBoxItem>Task 1</ListBoxItem>
+                    </ListBox>
+                    
+                    <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="4">
+                        <Button Content="Add Task" Margin="2" Padding="8"
+                                Background="{DynamicResource ButtonBackground}"
+                                Foreground="{DynamicResource TextForeground}" />
+                        <Button Content="Delete Task" Margin="2" Padding="8"
+                                Background="{DynamicResource ButtonBackground}"
+                                Foreground="{DynamicResource TextForeground}" />
+                    </StackPanel>
+                </Grid>
+            </TabItem>
+        </TabControl>
+
+        <!-- Status Bar -->
+        <StatusBar Grid.Row="2" Background="{DynamicResource StatusBarBackground}">
+            <StatusBarItem>
+                <TextBlock Text="Listening..." Foreground="{DynamicResource TextForeground}" />
+            </StatusBarItem>
+            <Separator />
+            <StatusBarItem>
+                <TextBlock Text="Connected: 0" Foreground="{DynamicResource TextForeground}" />
+            </StatusBarItem>
+        </StatusBar>
+    </Grid>
+</Window>
